@@ -1,0 +1,15 @@
+{
+  "ten": "Tram IOT 1",
+  "id": "iot_1",
+
+  "toa_do": {
+    "x": 5,
+    "y": 7
+  },
+  "do_am_dat": 30,
+  "do_doc": 40,
+  "do_rung_dat": 5,
+  "mua_24h": 100,
+
+  "khoang_cach": 0
+}

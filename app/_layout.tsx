@@ -1,24 +1,16 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import 'react-native-reanimated';
-
-import { useColorScheme } from '@/hooks/use-color-scheme';
-
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
+import { NativeTabs, Icon, Label } from "expo-router/unstable-native-tabs";
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
-
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    <NativeTabs>
+      <NativeTabs.Trigger name="index">
+        <Label>Trang chủ</Label>
+        <Icon sf="house.fill" drawable="custom_android_home" />
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="screen">
+        <Label>Bản đồ</Label>
+        <Icon sf="map.fill" drawable="custom_android_map" />
+      </NativeTabs.Trigger>
+    </NativeTabs>
   );
 }
