@@ -1,10 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
+import * as Haptics from "expo-haptics";
+import * as Cellular from "expo-cellular";
+import * as Location from "expo-location";
+import { Accelerometer } from "expo-sensors";
 
 type SensorSnapshot = {
   soilMoisture: number;
@@ -128,14 +141,32 @@ const formatDistance = (meters: number) => {
   return `${Math.round(meters)} m`;
 };
 
+const isBrowserOnline = () =>
+  typeof navigator !== "undefined" && typeof navigator.onLine === "boolean"
+    ? navigator.onLine
+    : true;
+
+const checkNetworkConnectivity = async () => {
+  let hasCellular = false;
+  try {
+    const generation = await Cellular.getCellularGenerationAsync();
+    hasCellular = generation !== null;
+  } catch (error) {
+    console.warn("Không kiểm tra được kết nối di động:", error);
+  }
+
+  const hasWifiOrAny = isBrowserOnline();
+  return hasCellular || hasWifiOrAny;
+};
+
 const globalSite = require("../assets/data/global.json") as GlobalPayload;
 const localConfig = require("../assets/data/local.json") as LocalConfig;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
+    shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
-    shouldShowAlert: true,
     shouldShowBanner: true,
     shouldShowList: true,
   }),
@@ -234,6 +265,7 @@ const sendLocalNotification = async (title: string, body: string) => {
 export default function IndexScreen() {
   const proximityNotified = useRef(false);
   const pushSentRef = useRef(false);
+  const groundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sensorSnapshot = useMemo(() => createSnapshotFromData(globalSite), []);
   const lastUpdated = useMemo(() => new Date(), []);
   const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
@@ -241,6 +273,26 @@ export default function IndexScreen() {
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
   const [lastNotification, setLastNotification] = useState<Notifications.Notification | null>(null);
   const notificationsEnabled = localConfig?.notifications !== false;
+  const [connectivityOk, setConnectivityOk] = useState<boolean | null>(null);
+  const [groundRunning, setGroundRunning] = useState(false);
+  const [groundSamples, setGroundSamples] = useState<
+    { ax: number; ay: number; az: number }[]
+  >([]);
+  const [groundPoints, setGroundPoints] = useState<{ lat: number; lon: number }[]>([]);
+  const [groundTrust, setGroundTrust] = useState<number | null>(null);
+  const [groundStatus, setGroundStatus] = useState("Sẵn sàng kiểm tra tại hiện trường");
+  const lastNotificationLabel = useMemo(() => {
+    if (!lastNotification) return "Chưa nhận thông báo";
+    const title = lastNotification.request.content.title || "Thông báo mới";
+    const timestamp =
+      typeof lastNotification.date === "number"
+        ? new Date(lastNotification.date).toLocaleTimeString("vi-VN", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : null;
+    return timestamp ? `${title} (${timestamp})` : title;
+  }, [lastNotification]);
 
   const riskLevels = useMemo(() => {
     const doAm = sensorSnapshot.soilMoisture;
@@ -296,7 +348,7 @@ export default function IndexScreen() {
         band: describeBand(projected),
       };
     });
-  }, [probability, riskLevels.rainfall24h, riskLevels.slopeAngle, riskLevels.soilMoisture]);
+  }, [probability, riskLevels]);
 
   const factors = useMemo(
     () =>
@@ -365,6 +417,25 @@ export default function IndexScreen() {
       ? `${globalSite.toa_do.x.toFixed(2)}N, ${globalSite.toa_do.y.toFixed(2)}E`
       : "Chưa có tọa độ";
 
+  const ensureConnectivity = useCallback(async () => {
+    const hasNet = await checkNetworkConnectivity();
+    setConnectivityOk(hasNet);
+    if (!hasNet) {
+      Alert.alert("Cần kết nối", "Bật Wi-Fi hoặc dữ liệu di động để tiếp tục kiểm tra.");
+    }
+    return hasNet;
+  }, []);
+
+  useEffect(() => {
+    ensureConnectivity();
+  }, [ensureConnectivity]);
+
+  const connectivityLabel = useMemo(() => {
+    if (connectivityOk === false) return "Không có Wi-Fi/4G";
+    if (connectivityOk) return "Đã bật Wi-Fi/4G";
+    return "Đang kiểm tra kết nối...";
+  }, [connectivityOk]);
+
   useEffect(() => {
     if (distanceMeters <= PROXIMITY_THRESHOLD_METERS && !proximityNotified.current) {
       proximityNotified.current = true;
@@ -412,8 +483,13 @@ export default function IndexScreen() {
 
     const isClose = distanceMeters <= PROXIMITY_THRESHOLD_METERS;
     const isHighRisk = probability >= PUSH_RISK_THRESHOLD;
-    if (isClose && isHighRisk && !pushSentRef.current) {
+    const readyForPush = isClose && isHighRisk && !pushSentRef.current;
+
+    if (readyForPush) {
       pushSentRef.current = true;
+      void ensureConnectivity();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+
       const title = "Cảnh báo sạt lở cao";
       const body = `Nguy cơ ${probabilityPercent}% tại ${siteName}. Khoảng cách: ${distanceLabel}.`;
       if (expoPushToken) {
@@ -425,18 +501,166 @@ export default function IndexScreen() {
     if ((!isClose || probability < PUSH_RISK_THRESHOLD - 0.1) && pushSentRef.current) {
       pushSentRef.current = false;
     }
-  }, [distanceLabel, distanceMeters, expoPushToken, probability, probabilityPercent, siteName]);
+  }, [
+    distanceLabel,
+    distanceMeters,
+    ensureConnectivity,
+    expoPushToken,
+    notificationsEnabled,
+    probability,
+    probabilityPercent,
+    siteName,
+  ]);
+
+  const groundTrustScore = useMemo(() => {
+    if (!groundSamples.length) return null;
+    const avgMagnitude =
+      groundSamples.reduce(
+        (sum, sample) => sum + Math.abs(sample.ax) + Math.abs(sample.ay) + Math.abs(sample.az),
+        0
+      ) / groundSamples.length;
+    return Math.round(clamp(100 - avgMagnitude * 40, 0, 100));
+  }, [groundSamples]);
+
+  useEffect(() => {
+    setGroundTrust(groundTrustScore);
+  }, [groundTrustScore]);
+
+  useEffect(() => {
+    if (!groundRunning) {
+      if (groundTimerRef.current) {
+        clearTimeout(groundTimerRef.current);
+        groundTimerRef.current = null;
+      }
+      setGroundStatus("Sẵn sàng kiểm tra tại hiện trường");
+      return;
+    }
+
+    let accelSub: { remove: () => void } | null = null;
+    let locSub: Location.LocationSubscription | null = null;
+    let cancelled = false;
+
+    const recordAccelerometer = ({ x, y, z }: { x: number; y: number; z: number }) => {
+      if (cancelled) return;
+      setGroundSamples((prev) => [...prev.slice(-300), { ax: x, ay: y, az: z }]);
+    };
+
+    const recordLocation = (loc: Location.LocationObject) => {
+      if (cancelled) return;
+      setGroundPoints((prev) => [
+        ...prev,
+        { lat: loc.coords.latitude, lon: loc.coords.longitude },
+      ]);
+    };
+
+    const requestLocationPermission = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === "granted") return true;
+        Alert.alert("Thiếu quyền vị trí", "Cấp quyền vị trí để ghi vết tại hiện trường.");
+        return false;
+      } catch (error) {
+        console.warn("Không lấy được quyền vị trí:", error);
+        return false;
+      }
+    };
+
+    const startRecording = async () => {
+      const hasNet = await ensureConnectivity();
+      if (!hasNet || cancelled) {
+        setGroundRunning(false);
+        return;
+      }
+
+      const hasPermission = await requestLocationPermission();
+      if (!hasPermission || cancelled) {
+        setGroundRunning(false);
+        return;
+      }
+
+      setGroundStatus("Đang ghi rung & GPS (5 phút)...");
+      groundTimerRef.current = setTimeout(() => setGroundRunning(false), 5 * 60 * 1000);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+
+      try {
+        accelSub = Accelerometer.addListener(recordAccelerometer);
+        Accelerometer.setUpdateInterval(100);
+      } catch (error) {
+        console.warn("Không thể ghi cảm biến:", error);
+      }
+
+      try {
+        locSub = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 2 },
+          recordLocation
+        );
+      } catch (error) {
+        console.warn("Không thể theo dõi vị trí:", error);
+      }
+    };
+
+    startRecording();
+
+    return () => {
+      cancelled = true;
+      accelSub?.remove();
+      locSub?.remove();
+      if (groundTimerRef.current) {
+        clearTimeout(groundTimerRef.current);
+        groundTimerRef.current = null;
+      }
+      setGroundStatus("Sẵn sàng kiểm tra tại hiện trường");
+    };
+  }, [ensureConnectivity, groundRunning]);
+
+  const handleToggleGroundCheck = useCallback(async () => {
+    if (groundRunning) {
+      setGroundRunning(false);
+      Haptics.selectionAsync().catch(() => {});
+      return;
+    }
+
+    const ok = await ensureConnectivity();
+    if (!ok) return;
+
+    setGroundSamples([]);
+    setGroundPoints([]);
+    setGroundTrust(null);
+    setGroundRunning(true);
+  }, [ensureConnectivity, groundRunning]);
 
   const quickStats = useMemo(
     () => [
       { label: "Khoảng cách tới trạm", value: distanceLabel },
       { label: "Độ tin cậy cảm biến", value: `${sensorConfidence}%` },
+      { label: "Kết nối", value: connectivityLabel },
       { label: "Yếu tố chi phối", value: dominantFactor?.label ?? "Đang tính toán" },
       { label: "Mã trạm", value: siteId },
       { label: "Tọa độ trạm", value: coordinateLabel },
+      { label: "Thông báo gần nhất", value: lastNotificationLabel },
     ],
-    [coordinateLabel, distanceLabel, dominantFactor?.label, sensorConfidence, siteId]
+    [
+      connectivityLabel,
+      coordinateLabel,
+      distanceLabel,
+      dominantFactor,
+      lastNotificationLabel,
+      sensorConfidence,
+      siteId,
+    ]
   );
+
+  const groundTrustLabel = useMemo(() => {
+    if (groundTrust !== null) return `${groundTrust}%`;
+    if (groundRunning) return "Đang tính...";
+    return "Chưa có dữ liệu";
+  }, [groundRunning, groundTrust]);
+
+  const groundPointsLabel = useMemo(() => {
+    if (groundPoints.length > 0) return `${groundPoints.length} điểm GPS`;
+    if (groundRunning) return "Đang ghi GPS...";
+    return "Chưa ghi GPS";
+  }, [groundPoints.length, groundRunning]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
@@ -464,6 +688,34 @@ export default function IndexScreen() {
               </View>
             ))}
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Kiểm tra tại hiện trường</Text>
+          <Text style={styles.sectionHint}>{groundStatus}</Text>
+          <View style={styles.quickRow}>
+            <View style={styles.groundCard}>
+              <Text style={styles.quickLabel}>Độ tin cậy trạm</Text>
+              <Text style={styles.quickValue}>{groundTrustLabel}</Text>
+            </View>
+            <View style={styles.groundCard}>
+              <Text style={styles.quickLabel}>Vị trí ghi</Text>
+              <Text style={styles.quickValue}>{groundPointsLabel}</Text>
+            </View>
+            <View style={styles.groundCard}>
+              <Text style={styles.quickLabel}>Kết nối</Text>
+              <Text style={styles.quickValue}>{connectivityLabel}</Text>
+            </View>
+          </View>
+          <Pressable
+            onPress={handleToggleGroundCheck}
+            style={[styles.groundButton, groundRunning && styles.groundButtonStop]}
+          >
+            {groundRunning && <ActivityIndicator color="#ffffff" />}
+            <Text style={styles.groundButtonText}>
+              {groundRunning ? "Dừng & lưu kiểm tra" : "Bắt đầu kiểm tra 5 phút"}
+            </Text>
+          </Pressable>
         </View>
 
         <View style={styles.section}>
@@ -581,6 +833,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#0f172a",
   },
+  sectionHint: {
+    fontSize: 13,
+    color: "#475569",
+    marginTop: -4,
+  },
   quickRow: {
     flexDirection: "row",
     gap: 12,
@@ -594,6 +851,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#e2e8f0",
     backgroundColor: "transparent",
+  },
+  groundCard: {
+    flex: 1,
+    minWidth: "45%",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#f8fafc",
+  },
+  groundButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: "#15803d",
+  },
+  groundButtonStop: {
+    backgroundColor: "#dc2626",
+  },
+  groundButtonText: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "700",
   },
   quickLabel: {
     fontSize: 13,

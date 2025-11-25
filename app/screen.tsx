@@ -13,7 +13,6 @@ import type {
   WebViewErrorEvent,
   WebViewHttpErrorEvent,
   WebViewMessageEvent,
-  WebViewNavigation,
   WebViewProgressEvent,
 } from "react-native-webview/lib/WebViewTypes";
 import { StatusBar } from "expo-status-bar";
@@ -42,22 +41,6 @@ export default function MapScreen() {
     setStatusMessage("Bản đồ sẵn sàng");
   }, []);
 
-  const handleNavigationStateChange = useCallback(
-    (navState: WebViewNavigation) => {
-      const urlLabel = (() => {
-        try {
-          const { hostname } = new URL(navState.url);
-          return hostname || navState.url;
-        } catch {
-          return navState.url;
-        }
-      })();
-
-      setStatusMessage(`Đang xem ${urlLabel}`);
-    },
-    []
-  );
-
   const handleError = useCallback((event: WebViewErrorEvent) => {
     const { description, url } = event.nativeEvent;
     const message = description || "Không thể tải bản đồ";
@@ -81,8 +64,8 @@ export default function MapScreen() {
   }, []);
 
   const handleShouldStartLoadWithRequest = useCallback(
-    (request: ShouldStartLoadRequest) => {
-      setStatusMessage(`Đang mở ${request.url}`);
+    (_request: ShouldStartLoadRequest) => {
+      setStatusMessage("Đang tải bản đồ...");
       return true;
     },
     []
@@ -111,21 +94,11 @@ export default function MapScreen() {
             onLoadEnd={handleLoadEnd}
             onError={handleError}
             onHttpError={handleHttpError}
-            onNavigationStateChange={handleNavigationStateChange}
             onMessage={handleMessage}
             onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
             style={styles.webview}
           />
         </View>
-        <Text
-          style={[
-            styles.statusText,
-            lastErrorMessage && styles.statusTextError,
-          ]}
-          numberOfLines={2}
-        >
-          {loaderMessage}
-        </Text>
       </View>
     </SafeAreaView>
   );
@@ -165,14 +138,5 @@ const styles = StyleSheet.create({
   },
   loaderText: {
     fontSize: 14,
-  },
-  statusText: {
-    textAlign: "center",
-    fontSize: 13,
-    color: "#4f4f4f",
-  },
-  statusTextError: {
-    color: "#c93a3a",
-    fontWeight: "600",
   },
 });
