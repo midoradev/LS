@@ -1,0 +1,160 @@
+# WARP.md
+
+Tệp này cung cấp hướng dẫn cho WARP (warp.dev) khi làm việc với mã nguồn trong repository này.
+
+## Tổng quan dự án
+
+**LS2** là ứng dụng di động React Native được xây dựng với Expo để giám sát nguy cơ sạt lở đất theo thời gian thực. Ứng dụng hiển thị đánh giá rủi ro dựa trên dữ liệu cảm biến (độ ẩm đất, độ dốc, lượng mưa, rung động nền), cung cấp dự báo và gửi thông báo đẩy khi ngưỡng rủi ro bị vượt quá. Giao diện bằng tiếng Việt và bao gồm cả bảng điều khiển giám sát rủi ro và chế độ xem bản đồ.
+
+## Các lệnh phát triển
+
+### Khởi động phát triển
+```bash
+npx expo start
+```
+Mở Metro bundler với các tùy chọn chạy trên iOS simulator, Android emulator hoặc Expo Go.
+
+### Build theo nền tảng
+```bash
+# Chạy trên iOS (yêu cầu Mac với Xcode)
+npm run ios
+
+# Chạy trên Android (yêu cầu Android Studio)
+npm run android
+
+# Chạy trên web
+npm run web
+```
+
+### Linting
+```bash
+npm run lint
+```
+Chạy ESLint với cấu hình của Expo.
+
+### EAS Build (Production)
+Dự án sử dụng Expo Application Services (EAS) để build production:
+```bash
+# Build cho iOS simulator
+eas build --profile ios-simulator --platform ios
+
+# Build cho preview (phân phối nội bộ)
+eas build --profile preview
+
+# Build cho production
+eas build --profile production
+```
+
+## Kiến trúc
+
+### Routing
+Ứng dụng sử dụng **Expo Router** với routing dựa trên file và native tabs:
+- `app/_layout.tsx`: Layout gốc định nghĩa thanh tab native với hai tab: "Trang chủ" và "Bản đồ"
+- `app/index.tsx`: Màn hình giám sát rủi ro chính (tab trang chủ)
+- `app/screen.tsx`: Màn hình bản đồ hiển thị dữ liệu sạt lở qua WebView
+
+### Luồng dữ liệu
+- **Dữ liệu cảm biến tĩnh**: Tải từ `assets/data/global.json` chứa metadata trạm và số đo cảm biến
+- **Cấu hình**: `assets/data/local.json` lưu trữ tùy chọn người dùng (ngôn ngữ, theme, thông báo)
+- **Dữ liệu thời gian thực**: Sử dụng cảm biến thiết bị (accelerometer) và dịch vụ vị trí để xác thực ground truth
+- **Thông báo**: Triển khai cả Expo Push Notifications và thông báo cục bộ
+
+### Các thành phần & logic chính
+
+#### Tính toán rủi ro (app/index.tsx)
+Thuật toán đánh giá rủi ro cân nhắc bốn yếu tố:
+- **Độ ẩm đất** (trọng số 32%): Rủi ro cao khi gần bão hòa (60-100%)
+- **Độ dốc** (trọng số 31%): Nguy hiểm ở 25-45 độ
+- **Lượng mưa 24h** (trọng số 22%): Ngưỡng cảnh báo ở 80-200mm
+- **Rung động nền** (trọng số 15%): Rủi ro hoạt động địa chấn ở 4-6.5 Richter
+
+Điểm xác suất cuối cùng xác định các băng rủi ro:
+- **Ổn định**: < 28%
+- **Cảnh giác**: 28-45%
+- **Tăng cao**: 45-65%
+- **Cao**: 65-80%
+- **Nguy hiểm**: ≥ 80%
+
+#### Xác thực Ground Truth
+Ứng dụng bao gồm chế độ xác minh thực địa 5 phút:
+1. Ghi dữ liệu accelerometer (khoảng 100ms) để đo rung động nền
+2. Theo dõi tọa độ GPS mỗi 2 giây
+3. Tính điểm tin cậy ground truth (0-100%) dựa trên độ ổn định rung động
+4. Yêu cầu cả quyền vị trí và mạng
+
+#### Thông báo đẩy
+Thông báo được kích hoạt khi:
+- Người dùng trong phạm vi 100m của trạm giám sát (`PROXIMITY_THRESHOLD_METERS`)
+- Xác suất rủi ro vượt quá 70% (`PUSH_RISK_THRESHOLD`)
+- Yêu cầu đăng ký Expo push token (tự động xử lý trên thiết bị thật)
+
+### Tích hợp bản đồ
+`app/screen.tsx` nhúng bản đồ giám sát sạt lở Việt Nam (https://luquetsatlo.nchmf.gov.vn/) qua WebView với xử lý lỗi toàn diện.
+
+## Các file cấu hình
+
+### TypeScript
+Dự án sử dụng TypeScript strict với path aliases:
+- `@/*` ánh xạ tới thư mục gốc dự án (cấu hình trong `tsconfig.json`)
+
+### Cấu hình Expo
+Các thiết lập chính trong `app.json`:
+- **Bundle identifiers**: iOS: `com.7ncvz.LS2`, Slug: `LS2`
+- **EAS Project ID**: `bb189af9-89bd-4799-b53d-8204acfd6b43`
+- **React Compiler**: Đã bật (`reactCompiler: true`)
+- **New Architecture**: Đã bật (`newArchEnabled: true`)
+- **Plugins**: expo-router, expo-splash-screen, expo-notifications
+
+## Làm việc với dữ liệu cảm biến
+
+### Điều chỉnh ngưỡng rủi ro
+Cập nhật các hằng số trong `app/index.tsx`:
+- `WEIGHTS`: Điều chỉnh trọng số yếu tố (tổng phải bằng 1.0)
+- `METRIC_CONFIG`: Thay đổi phạm vi cảm biến và định dạng hiển thị
+- `PROXIMITY_THRESHOLD_METERS`: Ngưỡng khoảng cách cho cảnh báo gần
+- `PUSH_RISK_THRESHOLD`: Mức rủi ro kích hoạt thông báo
+- `FORECAST_HOURS`: Khung thời gian dự báo
+
+### Cập nhật dữ liệu cảm biến
+Chỉnh sửa `assets/data/global.json`:
+- `ten`: Tên trạm
+- `id`: Mã định danh trạm
+- `toa_do`: Tọa độ {x: lat, y: lon}
+- `do_am_dat`: Độ ẩm đất (%)
+- `do_doc`: Độ dốc (độ)
+- `do_rung_dat`: Rung động nền (cm/s²)
+- `mua_24h`: Lượng mưa 24 giờ (mm)
+- `khoang_cach`: Khoảng cách từ thiết bị đến trạm (mét)
+
+### Cài đặt người dùng
+Chỉnh sửa `assets/data/local.json`:
+- `notifications`: Bật/tắt thông báo đẩy
+- `lang`: Ngôn ngữ (hiện tại "vi" cho tiếng Việt)
+- `mode`: Giao diện ("light" hoặc "dark")
+
+## Các thư viện phụ thuộc
+
+### Framework cốt lõi
+- React Native 0.81.5 với React 19.1.0
+- Expo SDK ~54.0.25
+- Expo Router ~6.0.15 (routing dựa trên file với native tabs)
+
+### Tính năng thiết bị
+- `expo-sensors`: Accelerometer để phát hiện rung động
+- `expo-location`: Theo dõi GPS để xác minh thực địa
+- `expo-notifications`: Hệ thống thông báo đẩy
+- `expo-haptics`: Phản hồi xúc giác
+- `expo-device`, `expo-cellular`: Trạng thái thiết bị và mạng
+
+### Các thành phần UI
+- `react-native-webview`: Để nhúng bản đồ
+- `react-native-safe-area-context`: Xử lý vùng an toàn
+- `@react-navigation/*`: Cơ sở hạ tầng điều hướng
+
+## Ghi chú
+
+- **Ngôn ngữ**: Tất cả chuỗi UI bằng tiếng Việt
+- **Nền tảng mục tiêu**: iOS và Android (có thể xuất web nhưng thông báo bị hạn chế)
+- **Quyền yêu cầu**: Vị trí (foreground), thông báo
+- **Mạng**: Ứng dụng kiểm tra kết nối Wi-Fi/cellular trước các thao tác quan trọng
+- **Testing**: Chưa cấu hình framework test; nên thêm Jest + Testing Library cho phát triển tương lai

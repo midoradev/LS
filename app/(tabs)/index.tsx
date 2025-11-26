@@ -9,15 +9,19 @@ import {
   Text,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import { useRouter, type Href } from "expo-router";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 import * as Haptics from "expo-haptics";
-import * as Cellular from "expo-cellular";
 import * as Location from "expo-location";
 import { Accelerometer } from "expo-sensors";
+import { useSettings } from "../../providers/settings-context";
+import { getCopy, type Copy, type RiskBandKey } from "../../lib/copy";
+import { getTheme, type Theme } from "../../lib/theme";
 
 type SensorSnapshot = {
   soilMoisture: number;
@@ -25,8 +29,6 @@ type SensorSnapshot = {
   rainfall24h: number;
   groundVibration: number;
 };
-
-type RiskBand = "Ổn định" | "Cảnh giác" | "Tăng cao" | "Cao" | "Nguy hiểm";
 
 type GlobalPayload = {
   ten?: string;
@@ -42,56 +44,37 @@ type GlobalPayload = {
   khoang_cach?: number;
 };
 
-type LocalConfig = {
-  id?: string;
-  lang?: string;
-  mode?: "light" | "dark";
-  notifications?: boolean;
+const SERIOUSNESS_COLORS: Record<RiskBandKey, string> = {
+  stable: "#15803d",
+  caution: "#2563eb",
+  elevated: "#b45309",
+  high: "#f97316",
+  danger: "#dc2626",
 };
 
-const SERIOUSNESS_COLORS: Record<RiskBand, string> = {
-  "Ổn định": "#15803d",
-  "Cảnh giác": "#2563eb",
-  "Tăng cao": "#b45309",
-  Cao: "#f97316",
-  "Nguy hiểm": "#dc2626",
-};
-
-const BAND_LABELS: Record<RiskBand, string> = {
-  "Ổn định": "Ổn định",
-  "Cảnh giác": "Cảnh giác",
-  "Tăng cao": "Tăng cao",
-  Cao: "Cao",
-  "Nguy hiểm": "Nguy hiểm",
-};
-
-const METRIC_CONFIG: Record<
+const METRIC_BASE: Record<
   keyof SensorSnapshot,
-  { label: string; min: number; max: number; color: string; format: (value: number) => string }
+  { min: number; max: number; color: string; format: (value: number) => string }
 > = {
   soilMoisture: {
-    label: "Độ ẩm đất",
     min: 30,
     max: 95,
     color: "#15803d",
     format: (value) => `${value.toFixed(1)}%`,
   },
   slopeAngle: {
-    label: "Độ dốc",
     min: 10,
     max: 55,
     color: "#2563eb",
     format: (value) => `${value.toFixed(1)}°`,
   },
   rainfall24h: {
-    label: "Lượng mưa 24h",
     min: 20,
     max: 200,
     color: "#0f766e",
     format: (value) => `${value.toFixed(0)} mm`,
   },
   groundVibration: {
-    label: "Rung nền",
     min: 0.05,
     max: 1.4,
     color: "#b45309",
@@ -118,12 +101,12 @@ const riskFromRange = (value: number, startRisk: number, danger: number) =>
 const hasUsableLocalStorage = () =>
   typeof localStorage !== "undefined" && typeof localStorage.getItem === "function";
 
-const describeBand = (score: number): RiskBand => {
-  if (score >= 0.8) return "Nguy hiểm";
-  if (score >= 0.65) return "Cao";
-  if (score >= 0.45) return "Tăng cao";
-  if (score >= 0.28) return "Cảnh giác";
-  return "Ổn định";
+const describeBand = (score: number): RiskBandKey => {
+  if (score >= 0.8) return "danger";
+  if (score >= 0.65) return "high";
+  if (score >= 0.45) return "elevated";
+  if (score >= 0.28) return "caution";
+  return "stable";
 };
 
 const asNumber = (value: unknown, fallback: number) =>
@@ -149,18 +132,18 @@ const isBrowserOnline = () =>
 const checkNetworkConnectivity = async () => {
   let hasCellular = false;
   try {
+    const Cellular = await import("expo-cellular");
     const generation = await Cellular.getCellularGenerationAsync();
     hasCellular = generation !== null;
   } catch (error) {
-    console.warn("Không kiểm tra được kết nối di động:", error);
+    console.warn("Bỏ qua kiểm tra kết nối di động (thiếu hoặc không hỗ trợ expo-cellular):", error);
   }
 
   const hasWifiOrAny = isBrowserOnline();
   return hasCellular || hasWifiOrAny;
 };
 
-const globalSite = require("../assets/data/global.json") as GlobalPayload;
-const localConfig = require("../assets/data/local.json") as LocalConfig;
+const globalSite = require("../../assets/data/global.json") as GlobalPayload;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -172,12 +155,15 @@ Notifications.setNotificationHandler({
   }),
 });
 
-const handleRegistrationError = (message: string) => {
-  Alert.alert("Thông báo", message);
+const handleRegistrationError = (title: string, message: string) => {
+  Alert.alert(title, message);
   console.error(message);
 };
 
-const registerForPushNotificationsAsync = async () => {
+const registerForPushNotificationsAsync = async (
+  alertTitle: string,
+  pushCopy: Copy["common"]["pushErrors"]
+) => {
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync("default", {
       name: "default",
@@ -188,7 +174,7 @@ const registerForPushNotificationsAsync = async () => {
   }
 
   if (!Device.isDevice) {
-    handleRegistrationError("Cần thiết bị thật để nhận thông báo đẩy.");
+    handleRegistrationError(alertTitle, pushCopy.deviceRequired);
     return null;
   }
 
@@ -199,14 +185,14 @@ const registerForPushNotificationsAsync = async () => {
     finalStatus = status;
   }
   if (finalStatus !== "granted") {
-    handleRegistrationError("Chưa được cấp quyền nhận thông báo.");
+    handleRegistrationError(alertTitle, pushCopy.permissionMissing);
     return null;
   }
 
   const projectId =
     Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
   if (!projectId) {
-    handleRegistrationError("Thiếu projectId để lấy push token.");
+    handleRegistrationError(alertTitle, pushCopy.projectIdMissing);
     return null;
   }
 
@@ -214,7 +200,7 @@ const registerForPushNotificationsAsync = async () => {
     const { data } = await Notifications.getExpoPushTokenAsync({ projectId });
     return data;
   } catch (error) {
-    handleRegistrationError(`Không thể lấy push token: ${error}`);
+    handleRegistrationError(alertTitle, pushCopy.tokenFailed(error));
     return null;
   }
 };
@@ -263,6 +249,15 @@ const sendLocalNotification = async (title: string, body: string) => {
 };
 
 export default function IndexScreen() {
+  const router = useRouter();
+  const { settings } = useSettings();
+  const copy = useMemo(() => getCopy(settings.lang), [settings.lang]);
+  const theme = useMemo(() => getTheme(settings.mode), [settings.mode]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const locale = settings.lang === "en" ? "en-US" : "vi-VN";
+  const goToSettings = useCallback(() => {
+    router.push("/settings" as Href);
+  }, [router]);
   const proximityNotified = useRef(false);
   const pushSentRef = useRef(false);
   const groundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -272,7 +267,7 @@ export default function IndexScreen() {
   const notificationListener = useRef<Notifications.EventSubscription | null>(null);
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
   const [lastNotification, setLastNotification] = useState<Notifications.Notification | null>(null);
-  const notificationsEnabled = localConfig?.notifications !== false;
+  const notificationsEnabled = settings.notifications;
   const [connectivityOk, setConnectivityOk] = useState<boolean | null>(null);
   const [groundRunning, setGroundRunning] = useState(false);
   const [groundSamples, setGroundSamples] = useState<
@@ -280,19 +275,35 @@ export default function IndexScreen() {
   >([]);
   const [groundPoints, setGroundPoints] = useState<{ lat: number; lon: number }[]>([]);
   const [groundTrust, setGroundTrust] = useState<number | null>(null);
-  const [groundStatus, setGroundStatus] = useState("Sẵn sàng kiểm tra tại hiện trường");
+  const [groundStatus, setGroundStatus] = useState(copy.home.ground.statusReady);
   const lastNotificationLabel = useMemo(() => {
-    if (!lastNotification) return "Chưa nhận thông báo";
-    const title = lastNotification.request.content.title || "Thông báo mới";
+    if (!lastNotification) return copy.common.lastNotificationFallback;
+    const title = lastNotification.request.content.title || copy.common.lastNotificationFallback;
     const timestamp =
-      typeof lastNotification.date === "number"
-        ? new Date(lastNotification.date).toLocaleTimeString("vi-VN", {
+    typeof lastNotification.date === "number"
+        ? new Date(lastNotification.date).toLocaleTimeString(locale, {
             hour: "2-digit",
             minute: "2-digit",
           })
         : null;
     return timestamp ? `${title} (${timestamp})` : title;
-  }, [lastNotification]);
+  }, [copy.common.lastNotificationFallback, lastNotification, locale]);
+
+  const metricConfig = useMemo(
+    () => ({
+      soilMoisture: { ...METRIC_BASE.soilMoisture, label: copy.home.metrics.soilMoisture },
+      slopeAngle: { ...METRIC_BASE.slopeAngle, label: copy.home.metrics.slopeAngle },
+      rainfall24h: { ...METRIC_BASE.rainfall24h, label: copy.home.metrics.rainfall24h },
+      groundVibration: { ...METRIC_BASE.groundVibration, label: copy.home.metrics.groundVibration },
+    }),
+    [copy]
+  );
+
+  useEffect(() => {
+    setGroundStatus(
+      groundRunning ? copy.home.ground.statusRecording : copy.home.ground.statusReady
+    );
+  }, [copy, groundRunning]);
 
   const riskLevels = useMemo(() => {
     const doAm = sensorSnapshot.soilMoisture;
@@ -352,8 +363,8 @@ export default function IndexScreen() {
 
   const factors = useMemo(
     () =>
-      (Object.keys(METRIC_CONFIG) as (keyof SensorSnapshot)[]).map((key) => {
-        const meta = METRIC_CONFIG[key];
+      (Object.keys(metricConfig) as (keyof SensorSnapshot)[]).map((key) => {
+        const meta = metricConfig[key];
         return {
           key,
           label: meta.label,
@@ -362,7 +373,7 @@ export default function IndexScreen() {
           color: meta.color,
         };
       }),
-    [riskLevels, sensorSnapshot]
+    [metricConfig, riskLevels, sensorSnapshot]
   );
 
   const dominantFactor = useMemo(() => {
@@ -376,38 +387,22 @@ export default function IndexScreen() {
 
   const mitigationSteps = useMemo(() => {
     if (probability >= 0.75) {
-      return [
-        "Sơ tán ngay các hộ dân trong vùng đỏ.",
-        "Chặn đường qua sườn dốc, ưu tiên lực lượng ứng cứu.",
-        "Bay flycam hoặc kiểm tra trực tiếp mỗi 15 phút.",
-      ];
+      return copy.home.mitigation.extreme;
     }
     if (probability >= 0.55) {
-      return [
-        "Gửi cảnh báo tự động mỗi giờ.",
-        "Mở rãnh thoát nước, dọn sạch vật cản.",
-        "Giữ liên lạc với đội phản ứng nhanh tại điểm tập kết.",
-      ];
+      return copy.home.mitigation.high;
     }
     if (probability >= 0.35) {
-      return [
-        "Tuần tra tìm vết nứt mới trên sườn dốc.",
-        "So sánh số liệu mưa với trạm địa phương.",
-        "Kiểm tra thiết bị đo mưa trước nửa đêm.",
-      ];
+      return copy.home.mitigation.medium;
     }
-    return [
-      "Giám sát định kỳ mỗi 6 giờ.",
-      "Thông tin trạng thái an toàn cho cộng đồng.",
-      "Đồng bộ thiết bị sau mỗi đợt mưa nhỏ.",
-    ];
-  }, [probability]);
+    return copy.home.mitigation.low;
+  }, [copy, probability]);
 
   const distanceMeters = clamp(asNumber(globalSite?.khoang_cach, 0), 0, Number.MAX_SAFE_INTEGER);
   const distanceLabel = formatDistance(distanceMeters);
-  const siteName = globalSite?.ten || "Trạm giám sát";
-  const siteId = globalSite?.id || "Không có mã trạm";
-  const updatedAtLabel = lastUpdated.toLocaleTimeString("vi-VN", {
+  const siteName = globalSite?.ten || copy.common.stationNameFallback;
+  const siteId = globalSite?.id || copy.common.stationIdFallback;
+  const updatedAtLabel = lastUpdated.toLocaleTimeString(locale, {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -415,39 +410,39 @@ export default function IndexScreen() {
   const coordinateLabel =
     typeof globalSite?.toa_do?.x === "number" && typeof globalSite?.toa_do?.y === "number"
       ? `${globalSite.toa_do.x.toFixed(2)}N, ${globalSite.toa_do.y.toFixed(2)}E`
-      : "Chưa có tọa độ";
+      : copy.common.coordinatesFallback;
 
   const ensureConnectivity = useCallback(async () => {
     const hasNet = await checkNetworkConnectivity();
     setConnectivityOk(hasNet);
     if (!hasNet) {
-      Alert.alert("Cần kết nối", "Bật Wi-Fi hoặc dữ liệu di động để tiếp tục kiểm tra.");
+      Alert.alert(copy.common.connectivity.needTitle, copy.common.connectivity.needBody);
     }
     return hasNet;
-  }, []);
+  }, [copy]);
 
   useEffect(() => {
     ensureConnectivity();
   }, [ensureConnectivity]);
 
   const connectivityLabel = useMemo(() => {
-    if (connectivityOk === false) return "Không có Wi-Fi/4G";
-    if (connectivityOk) return "Đã bật Wi-Fi/4G";
-    return "Đang kiểm tra kết nối...";
-  }, [connectivityOk]);
+    if (connectivityOk === false) return copy.common.connectivity.offline;
+    if (connectivityOk) return copy.common.connectivity.online;
+    return copy.common.connectivity.checking;
+  }, [connectivityOk, copy]);
 
   useEffect(() => {
     if (distanceMeters <= PROXIMITY_THRESHOLD_METERS && !proximityNotified.current) {
       proximityNotified.current = true;
       Alert.alert(
-        "Cảnh báo khoảng cách",
-        `Thiết bị đang cách trạm ${distanceLabel} (<= ${PROXIMITY_THRESHOLD_METERS}m).`
+        copy.common.proximityTitle,
+        copy.common.proximityBody(distanceLabel, PROXIMITY_THRESHOLD_METERS)
       );
     }
     if (distanceMeters > PROXIMITY_THRESHOLD_METERS + 20) {
       proximityNotified.current = false;
     }
-  }, [distanceLabel, distanceMeters]);
+  }, [copy, distanceLabel, distanceMeters]);
 
   useEffect(() => {
     if (!notificationsEnabled) {
@@ -461,9 +456,11 @@ export default function IndexScreen() {
       return;
     }
 
-    registerForPushNotificationsAsync().then((token) => {
-      if (token) setExpoPushToken(token);
-    });
+    registerForPushNotificationsAsync(copy.common.noticeTitle, copy.common.pushErrors).then(
+      (token) => {
+        if (token) setExpoPushToken(token);
+      }
+    );
 
     notificationListener.current = Notifications.addNotificationReceivedListener((notification) => {
       setLastNotification(notification);
@@ -476,7 +473,7 @@ export default function IndexScreen() {
       notificationListener.current?.remove();
       responseListener.current?.remove();
     };
-  }, [notificationsEnabled]);
+  }, [copy.common.noticeTitle, copy.common.pushErrors, notificationsEnabled]);
 
   useEffect(() => {
     if (!notificationsEnabled) return;
@@ -490,8 +487,8 @@ export default function IndexScreen() {
       void ensureConnectivity();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
 
-      const title = "Cảnh báo sạt lở cao";
-      const body = `Nguy cơ ${probabilityPercent}% tại ${siteName}. Khoảng cách: ${distanceLabel}.`;
+      const title = copy.common.pushTitle;
+      const body = copy.common.pushBody(probabilityPercent, siteName, distanceLabel);
       if (expoPushToken) {
         sendPushNotification(expoPushToken, title, body);
       } else {
@@ -502,6 +499,16 @@ export default function IndexScreen() {
       pushSentRef.current = false;
     }
   }, [
+    distanceLabel,
+    distanceMeters,
+    ensureConnectivity,
+    expoPushToken,
+    notificationsEnabled,
+    probability,
+    probabilityPercent,
+    siteName,
+  ], [
+    copy.common,
     distanceLabel,
     distanceMeters,
     ensureConnectivity,
@@ -532,7 +539,7 @@ export default function IndexScreen() {
         clearTimeout(groundTimerRef.current);
         groundTimerRef.current = null;
       }
-      setGroundStatus("Sẵn sàng kiểm tra tại hiện trường");
+      setGroundStatus(copy.home.ground.statusReady);
       return;
     }
 
@@ -557,7 +564,7 @@ export default function IndexScreen() {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === "granted") return true;
-        Alert.alert("Thiếu quyền vị trí", "Cấp quyền vị trí để ghi vết tại hiện trường.");
+        Alert.alert(copy.common.locationPermissionTitle, copy.common.locationPermissionBody);
         return false;
       } catch (error) {
         console.warn("Không lấy được quyền vị trí:", error);
@@ -578,7 +585,7 @@ export default function IndexScreen() {
         return;
       }
 
-      setGroundStatus("Đang ghi rung & GPS (5 phút)...");
+      setGroundStatus(copy.home.ground.statusRecording);
       groundTimerRef.current = setTimeout(() => setGroundRunning(false), 5 * 60 * 1000);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 
@@ -609,9 +616,9 @@ export default function IndexScreen() {
         clearTimeout(groundTimerRef.current);
         groundTimerRef.current = null;
       }
-      setGroundStatus("Sẵn sàng kiểm tra tại hiện trường");
+      setGroundStatus(copy.home.ground.statusReady);
     };
-  }, [ensureConnectivity, groundRunning]);
+  }, [copy, ensureConnectivity, groundRunning]);
 
   const handleToggleGroundCheck = useCallback(async () => {
     if (groundRunning) {
@@ -631,13 +638,13 @@ export default function IndexScreen() {
 
   const quickStats = useMemo(
     () => [
-      { label: "Khoảng cách tới trạm", value: distanceLabel },
-      { label: "Độ tin cậy cảm biến", value: `${sensorConfidence}%` },
-      { label: "Kết nối", value: connectivityLabel },
-      { label: "Yếu tố chi phối", value: dominantFactor?.label ?? "Đang tính toán" },
-      { label: "Mã trạm", value: siteId },
-      { label: "Tọa độ trạm", value: coordinateLabel },
-      { label: "Thông báo gần nhất", value: lastNotificationLabel },
+      { label: copy.home.quickStats.distance, value: distanceLabel },
+      { label: copy.home.quickStats.sensorConfidence, value: `${sensorConfidence}%` },
+      { label: copy.home.quickStats.connectivity, value: connectivityLabel },
+      { label: copy.home.quickStats.dominant, value: dominantFactor?.label ?? copy.common.calculating },
+      { label: copy.home.quickStats.siteId, value: siteId },
+      { label: copy.home.quickStats.coords, value: coordinateLabel },
+      { label: copy.home.quickStats.lastNotification, value: lastNotificationLabel },
     ],
     [
       connectivityLabel,
@@ -645,6 +652,7 @@ export default function IndexScreen() {
       distanceLabel,
       dominantFactor,
       lastNotificationLabel,
+      copy,
       sensorConfidence,
       siteId,
     ]
@@ -652,34 +660,45 @@ export default function IndexScreen() {
 
   const groundTrustLabel = useMemo(() => {
     if (groundTrust !== null) return `${groundTrust}%`;
-    if (groundRunning) return "Đang tính...";
-    return "Chưa có dữ liệu";
-  }, [groundRunning, groundTrust]);
+    if (groundRunning) return copy.home.ground.trustWorking;
+    return copy.home.ground.trustNone;
+  }, [copy, groundRunning, groundTrust]);
 
   const groundPointsLabel = useMemo(() => {
-    if (groundPoints.length > 0) return `${groundPoints.length} điểm GPS`;
-    if (groundRunning) return "Đang ghi GPS...";
-    return "Chưa ghi GPS";
-  }, [groundPoints.length, groundRunning]);
+    if (groundPoints.length > 0) return copy.home.ground.pointsCount(groundPoints.length);
+    if (groundRunning) return copy.home.ground.pointsWorking;
+    return copy.home.ground.pointsNone;
+  }, [copy, groundPoints.length, groundRunning]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
-      <StatusBar style="dark" />
+      <StatusBar style={theme.statusBar} />
       <ScrollView contentContainerStyle={styles.container} style={styles.scroll}>
         <View style={styles.hero}>
-          <Text style={styles.heroLabel}>Nguy cơ sạt lở</Text>
-          <Text style={styles.heroLocation}>{siteName}</Text>
-          <View style={styles.heroRow}>
+          <View style={styles.heroHeader}>
+            <View>
+              <Text style={styles.heroLabel}>{copy.home.heroTitle}</Text>
+              <Text style={styles.heroLocation}>{siteName}</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={goToSettings}
+              style={({ pressed }) => [styles.settingsButton, pressed && styles.settingsButtonPressed]}
+            >
+              <Ionicons name="settings-outline" size={18} color={theme.icon} />
+            </Pressable>
+          </View>
+          <View style={[styles.heroRow, styles.heroRowWide]}>
             <Text style={[styles.heroValue, { color: severityColor }]}>{probabilityPercent}%</Text>
             <View style={styles.heroMeta}>
-              <Text style={styles.heroBand}>{BAND_LABELS[band]}</Text>
-              <Text style={styles.heroTime}>{`Cập nhật ${updatedAtLabel}`}</Text>
+              <Text style={styles.heroBand}>{copy.common.riskBands[band]}</Text>
+              <Text style={styles.heroTime}>{copy.home.updatedAt(updatedAtLabel)}</Text>
             </View>
           </View>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Tóm tắt nhanh</Text>
+          <Text style={styles.sectionTitle}>{copy.home.quickSummaryTitle}</Text>
           <View style={styles.quickRow}>
             {quickStats.map((item) => (
               <View key={item.label} style={styles.quickCard}>
@@ -691,19 +710,19 @@ export default function IndexScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Kiểm tra tại hiện trường</Text>
+          <Text style={styles.sectionTitle}>{copy.home.fieldCheckTitle}</Text>
           <Text style={styles.sectionHint}>{groundStatus}</Text>
           <View style={styles.quickRow}>
             <View style={styles.groundCard}>
-              <Text style={styles.quickLabel}>Độ tin cậy trạm</Text>
+              <Text style={styles.quickLabel}>{copy.home.ground.trustLabel}</Text>
               <Text style={styles.quickValue}>{groundTrustLabel}</Text>
             </View>
             <View style={styles.groundCard}>
-              <Text style={styles.quickLabel}>Vị trí ghi</Text>
+              <Text style={styles.quickLabel}>{copy.home.ground.pointsLabel}</Text>
               <Text style={styles.quickValue}>{groundPointsLabel}</Text>
             </View>
             <View style={styles.groundCard}>
-              <Text style={styles.quickLabel}>Kết nối</Text>
+              <Text style={styles.quickLabel}>{copy.home.ground.connectionLabel}</Text>
               <Text style={styles.quickValue}>{connectivityLabel}</Text>
             </View>
           </View>
@@ -713,28 +732,28 @@ export default function IndexScreen() {
           >
             {groundRunning && <ActivityIndicator color="#ffffff" />}
             <Text style={styles.groundButtonText}>
-              {groundRunning ? "Dừng & lưu kiểm tra" : "Bắt đầu kiểm tra 5 phút"}
+              {groundRunning ? copy.home.ground.buttonStop : copy.home.ground.buttonStart}
             </Text>
           </Pressable>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Dự báo ngắn hạn</Text>
+          <Text style={styles.sectionTitle}>{copy.home.shortForecastTitle}</Text>
           <View style={styles.forecastRow}>
             {forecasts.map((forecast) => (
               <View key={forecast.hours} style={styles.forecastCard}>
-                <Text style={styles.forecastTitle}>{`+${forecast.hours} giờ`}</Text>
+                <Text style={styles.forecastTitle}>{copy.home.forecastAhead(forecast.hours)}</Text>
                 <Text style={[styles.forecastValue, { color: SERIOUSNESS_COLORS[forecast.band] }]}>
                   {`${Math.round(forecast.projected * 100)}%`}
                 </Text>
-                <Text style={styles.forecastLabel}>{BAND_LABELS[forecast.band]}</Text>
+                <Text style={styles.forecastLabel}>{copy.common.riskBands[forecast.band]}</Text>
               </View>
             ))}
           </View>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Cảm biến tại chỗ</Text>
+          <Text style={styles.sectionTitle}>{copy.home.sensorsTitle}</Text>
           {factors.map((factor) => (
             <View key={factor.key} style={styles.factorRow}>
               <View style={styles.factorMeta}>
@@ -754,7 +773,7 @@ export default function IndexScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Hướng dẫn hành động</Text>
+          <Text style={styles.sectionTitle}>{copy.home.guidanceTitle}</Text>
           {mitigationSteps.map((step, index) => (
             <Text key={step} style={styles.step}>
               {`${index + 1}. ${step}`}
@@ -766,179 +785,201 @@ export default function IndexScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: "transparent",
-  },
-  scroll: {
-    flex: 1,
-  },
-  container: {
-    padding: 20,
-    gap: 16,
-  },
-  hero: {
-    borderRadius: 18,
-    padding: 18,
-    gap: 8,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  heroLabel: {
-    color: "#334155",
-    fontSize: 14,
-  },
-  heroLocation: {
-    color: "#0f172a",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  heroRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 14,
-    marginTop: 4,
-  },
-  heroValue: {
-    fontSize: 46,
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  heroMeta: {
-    alignItems: "flex-start",
-    gap: 2,
-  },
-  heroBand: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#0f172a",
-  },
-  heroTime: {
-    color: "#475569",
-    fontSize: 13,
-  },
-  section: {
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    gap: 12,
-    backgroundColor: "transparent",
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0f172a",
-  },
-  sectionHint: {
-    fontSize: 13,
-    color: "#475569",
-    marginTop: -4,
-  },
-  quickRow: {
-    flexDirection: "row",
-    gap: 12,
-    flexWrap: "wrap",
-  },
-  quickCard: {
-    flex: 1,
-    minWidth: "45%",
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "transparent",
-  },
-  groundCard: {
-    flex: 1,
-    minWidth: "45%",
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#f8fafc",
-  },
-  groundButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: "#15803d",
-  },
-  groundButtonStop: {
-    backgroundColor: "#dc2626",
-  },
-  groundButtonText: {
-    color: "#ffffff",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  quickLabel: {
-    fontSize: 13,
-    color: "#475569",
-  },
-  quickValue: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#0f172a",
-    marginTop: 4,
-  },
-  forecastRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  forecastCard: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 6,
-    gap: 4,
-  },
-  forecastTitle: {
-    fontSize: 13,
-    color: "#475569",
-  },
-  forecastValue: {
-    fontSize: 22,
-    fontWeight: "800",
-  },
-  forecastLabel: {
-    fontSize: 13,
-    color: "#0f172a",
-  },
-  factorRow: {
-    gap: 6,
-  },
-  factorMeta: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  factorTitle: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#0f172a",
-  },
-  factorValue: {
-    fontSize: 14,
-    color: "#475569",
-  },
-  factorBar: {
-    height: 8,
-    backgroundColor: "#f1f5f9",
-    borderRadius: 999,
-  },
-  factorLevel: {
-    height: 8,
-    borderRadius: 999,
-  },
-  step: {
-    fontSize: 14,
-    color: "#0f172a",
-    marginTop: 4,
-  },
-});
+const createStyles = (theme: Theme) =>
+  StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    scroll: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    container: {
+      padding: 20,
+      gap: 16,
+      backgroundColor: theme.background,
+    },
+    hero: {
+      borderRadius: 18,
+      padding: 18,
+      gap: 8,
+      alignItems: "stretch",
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.card,
+    },
+    heroHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    heroLabel: {
+      color: theme.subtext,
+      fontSize: 14,
+    },
+    heroLocation: {
+      color: theme.text,
+      fontSize: 16,
+      fontWeight: "700",
+    },
+    heroRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 14,
+      marginTop: 4,
+    },
+    heroRowWide: {
+      alignSelf: "stretch",
+    },
+    heroValue: {
+      fontSize: 46,
+      fontWeight: "800",
+      textAlign: "center",
+    },
+    heroMeta: {
+      alignItems: "flex-start",
+      gap: 2,
+    },
+    heroBand: {
+      fontSize: 18,
+      fontWeight: "700",
+      color: theme.text,
+    },
+    heroTime: {
+      color: theme.subtext,
+      fontSize: 13,
+    },
+    settingsButton: {
+      padding: 10,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.softCard,
+    },
+    settingsButtonPressed: {
+      opacity: 0.8,
+    },
+    section: {
+      padding: 16,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: theme.border,
+      gap: 12,
+      backgroundColor: theme.card,
+    },
+    sectionTitle: {
+      fontSize: 16,
+      fontWeight: "700",
+      color: theme.text,
+    },
+    sectionHint: {
+      fontSize: 13,
+      color: theme.subtext,
+      marginTop: -4,
+    },
+    quickRow: {
+      flexDirection: "row",
+      gap: 12,
+      flexWrap: "wrap",
+    },
+    quickCard: {
+      flex: 1,
+      minWidth: "45%",
+      borderRadius: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.card,
+    },
+    groundCard: {
+      flex: 1,
+      minWidth: "45%",
+      borderRadius: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.softCard,
+    },
+    groundButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      paddingVertical: 12,
+      borderRadius: 12,
+      backgroundColor: theme.accent,
+    },
+    groundButtonStop: {
+      backgroundColor: theme.danger,
+    },
+    groundButtonText: {
+      color: "#ffffff",
+      fontSize: 15,
+      fontWeight: "700",
+    },
+    quickLabel: {
+      fontSize: 13,
+      color: theme.subtext,
+    },
+    quickValue: {
+      fontSize: 15,
+      fontWeight: "700",
+      color: theme.text,
+      marginTop: 4,
+    },
+    forecastRow: {
+      flexDirection: "row",
+      gap: 12,
+    },
+    forecastCard: {
+      flex: 1,
+      alignItems: "center",
+      paddingVertical: 6,
+      gap: 4,
+    },
+    forecastTitle: {
+      fontSize: 13,
+      color: theme.subtext,
+    },
+    forecastValue: {
+      fontSize: 22,
+      fontWeight: "800",
+    },
+    forecastLabel: {
+      fontSize: 13,
+      color: theme.text,
+    },
+    factorRow: {
+      gap: 6,
+    },
+    factorMeta: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    factorTitle: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: theme.text,
+    },
+    factorValue: {
+      fontSize: 14,
+      color: theme.subtext,
+    },
+    factorBar: {
+      height: 8,
+      backgroundColor: theme.track,
+      borderRadius: 999,
+    },
+    factorLevel: {
+      height: 8,
+      borderRadius: 999,
+    },
+    step: {
+      fontSize: 14,
+      color: theme.text,
+      marginTop: 4,
+    },
+  });
