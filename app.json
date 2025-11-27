@@ -1,23 +1,19 @@
 {
   "expo": {
-    "name": "LS2",
-    "slug": "LS2",
-    "version": "1.0.0",
+    "name": "landsafe",
+    "slug": "landsafe",
+    "version": "1.0.5",
     "orientation": "portrait",
-    "icon": "./assets/icons/adaptive-icon.png",
-    "scheme": "ls2",
+    "icon": "./assets/icons/ios-light.png",
+    "scheme": "landsafe",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.7ncvz.LS2",
+      "icon": "./assets/icons/icon-composer.icon",
+      "bundleIdentifier": "com.lucas28.landsafe",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
-      },
-      "icon": {
-        "dark": "./assets/icons/ios-dark.png",
-        "light": "./assets/icons/ios-light.png",
-        "tinted": "./assets/icons/ios-tinted.png"
       }
     },
     "android": {
@@ -34,12 +30,11 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
-      ],
-      "package": "com.x7ncvz.LS2"
+      ]
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/icons/adaptive-icon.png"
+      "favicon": "./assets/icons/ios-light.png"
     },
     "plugins": [
       "expo-router",
@@ -72,7 +67,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "bb189af9-89bd-4799-b53d-8204acfd6b43"
+        "projectId": "96cfef4d-d6d9-4ad4-a755-f50d372c4a70"
       }
     },
     "owner": "lucas28",
@@ -80,7 +75,7 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/bb189af9-89bd-4799-b53d-8204acfd6b43"
+      "url": "https://u.expo.dev/96cfef4d-d6d9-4ad4-a755-f50d372c4a70"
     }
   }
 }

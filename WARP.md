@@ -33,25 +33,40 @@ npm run lint
 Chạy ESLint với cấu hình của Expo.
 
 ### EAS Build (Production)
-Dự án sử dụng Expo Application Services (EAS) để build production:
+Dự án sử dụng Expo Application Services (EAS) để build production. Cấu hình trong `eas.json`:
 ```bash
-# Build cho iOS simulator
+# Build cho iOS simulator (development build với simulator: true)
 eas build --profile ios-simulator --platform ios
 
-# Build cho preview (phân phối nội bộ)
+# Build cho preview (phân phối nội bộ, không phải development client)
 eas build --profile preview
 
-# Build cho production
+# Build cho production (tự động tăng version)
 eas build --profile production
+
+# Build development (có dev client, phân phối nội bộ)
+eas build --profile development
 ```
+
+**EAS Build Profiles:**
+- `development`: Development client với internal distribution, channel "development"
+- `ios-simulator`: Extends development, đặc biệt cho iOS simulator
+- `preview`: Internal distribution, channel "preview", không phải dev client
+- `production`: Auto-increment version, channel "production", cho App Store/Play Store
 
 ## Kiến trúc
 
 ### Routing
 Ứng dụng sử dụng **Expo Router** với routing dựa trên file và native tabs:
-- `app/_layout.tsx`: Layout gốc định nghĩa thanh tab native với hai tab: "Trang chủ" và "Bản đồ"
-- `app/index.tsx`: Màn hình giám sát rủi ro chính (tab trang chủ)
-- `app/screen.tsx`: Màn hình bản đồ hiển thị dữ liệu sạt lở qua WebView
+- `app/_layout.tsx`: Layout gốc bọc toàn bộ app với SettingsProvider và định nghĩa Stack navigator
+- `app/(tabs)/_layout.tsx`: Layout cho tab navigation với NativeTabs (unstable API)
+- `app/(tabs)/index.tsx`: Màn hình giám sát rủi ro chính (tab trang chủ)
+- `app/(tabs)/screen.tsx`: Màn hình bản đồ hiển thị dữ liệu sạt lở qua WebView
+- `app/settings.tsx`: Màn hình cài đặt (modal/stack screen)
+
+**Thêm màn hình mới:**
+- Để thêm tab mới: tạo file trong `app/(tabs)/` và thêm `NativeTabs.Trigger` vào `_layout.tsx`
+- Để thêm modal/stack screen: tạo file trong `app/` và thêm `Stack.Screen` vào `app/_layout.tsx`
 
 ### Luồng dữ liệu
 - **Dữ liệu cảm biến tĩnh**: Tải từ `assets/data/global.json` chứa metadata trạm và số đo cảm biến
@@ -59,9 +74,31 @@ eas build --profile production
 - **Dữ liệu thời gian thực**: Sử dụng cảm biến thiết bị (accelerometer) và dịch vụ vị trí để xác thực ground truth
 - **Thông báo**: Triển khai cả Expo Push Notifications và thông báo cục bộ
 
+### Quản lý state
+**SettingsProvider** (`providers/settings-context.tsx`):
+- Context provider toàn cục quản lý cài đặt người dùng (ngôn ngữ, theme, thông báo)
+- Tự động đồng bộ với localStorage (khi có)
+- Sử dụng hook `useSettings()` để truy cập và cập nhật settings
+- Cấu trúc: `{ id, lang, mode, notifications }`
+- Mặc định load từ `assets/data/local.json`, sau đó override bằng localStorage
+
+### Thư viện tiện ích
+**`lib/copy.ts`**: Hệ thống đa ngôn ngữ (i18n)
+- Chứa tất cả chuỗi UI cho tiếng Việt ("vi") và English ("en")
+- Sử dụng `getCopy(lang)` để lấy bản sao theo ngôn ngữ
+- Chia thành các namespace: `common`, `home`, `settings`, `map`
+- Hỗ trợ cả chuỗi tĩnh và hàm format động (ví dụ: `updatedAt(time)`, `forecastAhead(hours)`)
+- Để thêm ngôn ngữ mới: thêm key mới vào `COPY` object và cập nhật type `Lang`
+
+**`lib/theme.ts`**: Hệ thống theme
+- Định nghĩa `lightTheme` và `darkTheme` với palette đầy đủ
+- Sử dụng `getTheme(mode)` để lấy theme hiện tại
+- Palette gồm: background, card, border, text, subtext, icon, accent, danger, track, statusBar
+- Tạo styles động theo theme trong component: `useMemo(() => createStyles(theme), [theme])`
+
 ### Các thành phần & logic chính
 
-#### Tính toán rủi ro (app/index.tsx)
+#### Tính toán rủi ro (app/(tabs)/index.tsx)
 Thuật toán đánh giá rủi ro cân nhắc bốn yếu tố:
 - **Độ ẩm đất** (trọng số 32%): Rủi ro cao khi gần bão hòa (60-100%)
 - **Độ dốc** (trọng số 31%): Nguy hiểm ở 25-45 độ

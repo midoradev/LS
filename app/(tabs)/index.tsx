@@ -14,7 +14,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useRouter, type Href } from "expo-router";
 import * as Device from "expo-device";
-import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
@@ -22,6 +21,7 @@ import { Accelerometer } from "expo-sensors";
 import { useSettings } from "../../providers/settings-context";
 import { getCopy, type Copy, type RiskBandKey } from "../../lib/copy";
 import { getTheme, type Theme } from "../../lib/theme";
+import type * as NotificationsType from "expo-notifications";
 
 type SensorSnapshot = {
   soilMoisture: number;
@@ -93,6 +93,11 @@ const PROXIMITY_THRESHOLD_METERS = 100;
 const FORECAST_HOURS = [1, 3, 6];
 const PUSH_RISK_THRESHOLD = 0.7;
 
+const isStaticRenderWeb = Platform.OS === "web" && typeof window === "undefined";
+const Notifications: typeof NotificationsType | null = isStaticRenderWeb
+  ? null
+  : require("expo-notifications");
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 const riskFromRange = (value: number, startRisk: number, danger: number) =>
@@ -145,7 +150,7 @@ const checkNetworkConnectivity = async () => {
 
 const globalSite = require("../../assets/data/global.json") as GlobalPayload;
 
-Notifications.setNotificationHandler({
+Notifications?.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: true,
@@ -164,6 +169,10 @@ const registerForPushNotificationsAsync = async (
   alertTitle: string,
   pushCopy: Copy["common"]["pushErrors"]
 ) => {
+  if (!Notifications) {
+    console.warn("Bỏ qua đăng ký thông báo (Notifications không khả dụng trong môi trường hiện tại).");
+    return null;
+  }
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync("default", {
       name: "default",
@@ -234,6 +243,10 @@ const sendLocalNotification = async (title: string, body: string) => {
     console.log("Bỏ qua thông báo cục bộ trên web/static.");
     return;
   }
+  if (!Notifications) {
+    console.log("Bỏ qua thông báo cục bộ vì Notifications không khả dụng.");
+    return;
+  }
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -264,9 +277,11 @@ export default function IndexScreen() {
   const sensorSnapshot = useMemo(() => createSnapshotFromData(globalSite), []);
   const lastUpdated = useMemo(() => new Date(), []);
   const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
-  const notificationListener = useRef<Notifications.EventSubscription | null>(null);
-  const responseListener = useRef<Notifications.EventSubscription | null>(null);
-  const [lastNotification, setLastNotification] = useState<Notifications.Notification | null>(null);
+  const notificationListener = useRef<NotificationsType.EventSubscription | null>(null);
+  const responseListener = useRef<NotificationsType.EventSubscription | null>(null);
+  const [lastNotification, setLastNotification] = useState<NotificationsType.Notification | null>(
+    null
+  );
   const notificationsEnabled = settings.notifications;
   const [connectivityOk, setConnectivityOk] = useState<boolean | null>(null);
   const [groundRunning, setGroundRunning] = useState(false);
@@ -450,6 +465,11 @@ export default function IndexScreen() {
       return;
     }
 
+    if (!Notifications) {
+      console.log("Notifications không khả dụng (SSR/static); bỏ qua đăng ký push.");
+      return;
+    }
+
     const usableLocalStorage = hasUsableLocalStorage();
     if (Platform.OS === "web" && !usableLocalStorage) {
       console.log("Bỏ qua đăng ký push trên web/static (không có localStorage khả dụng).");
@@ -462,9 +482,11 @@ export default function IndexScreen() {
       }
     );
 
-    notificationListener.current = Notifications.addNotificationReceivedListener((notification) => {
-      setLastNotification(notification);
-    });
+    notificationListener.current = Notifications.addNotificationReceivedListener(
+      (notification) => {
+        setLastNotification(notification);
+      }
+    );
     responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
       console.log("Phản hồi thông báo:", response.actionIdentifier);
     });
@@ -499,15 +521,6 @@ export default function IndexScreen() {
       pushSentRef.current = false;
     }
   }, [
-    distanceLabel,
-    distanceMeters,
-    ensureConnectivity,
-    expoPushToken,
-    notificationsEnabled,
-    probability,
-    probabilityPercent,
-    siteName,
-  ], [
     copy.common,
     distanceLabel,
     distanceMeters,
