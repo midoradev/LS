@@ -1,98 +1,998 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { useRouter, type Href } from "expo-router";
+import * as Device from "expo-device";
+import Constants from "expo-constants";
+import * as Haptics from "expo-haptics";
+import * as Location from "expo-location";
+import { Accelerometer } from "expo-sensors";
+import { useSettings } from "../../providers/settings-context";
+import { getCopy, type Copy, type RiskBandKey } from "../../lib/copy";
+import { getTheme, type Theme } from "../../lib/theme";
+import type * as NotificationsType from "expo-notifications";
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+type SensorSnapshot = {
+  soilMoisture: number;
+  slopeAngle: number;
+  rainfall24h: number;
+  groundVibration: number;
+};
 
-export default function HomeScreen() {
+type GlobalPayload = {
+  ten?: string;
+  id?: string;
+  toa_do?: {
+    x?: number;
+    y?: number;
+  };
+  do_am_dat?: number;
+  do_doc?: number;
+  do_rung_dat?: number;
+  mua_24h?: number;
+  khoang_cach?: number;
+};
+
+const SERIOUSNESS_COLORS: Record<RiskBandKey, string> = {
+  stable: "#15803d",
+  caution: "#2563eb",
+  elevated: "#b45309",
+  high: "#f97316",
+  danger: "#dc2626",
+};
+
+const METRIC_BASE: Record<
+  keyof SensorSnapshot,
+  { min: number; max: number; color: string; format: (value: number) => string }
+> = {
+  soilMoisture: {
+    min: 30,
+    max: 95,
+    color: "#15803d",
+    format: (value) => `${value.toFixed(1)}%`,
+  },
+  slopeAngle: {
+    min: 10,
+    max: 55,
+    color: "#2563eb",
+    format: (value) => `${value.toFixed(1)}°`,
+  },
+  rainfall24h: {
+    min: 20,
+    max: 200,
+    color: "#0f766e",
+    format: (value) => `${value.toFixed(0)} mm`,
+  },
+  groundVibration: {
+    min: 0.05,
+    max: 1.4,
+    color: "#b45309",
+    format: (value) => `${value.toFixed(2)} cm/s²`,
+  },
+};
+
+const WEIGHTS: Record<keyof SensorSnapshot, number> = {
+  soilMoisture: 0.32,
+  slopeAngle: 0.31,
+  rainfall24h: 0.22,
+  groundVibration: 0.15,
+};
+
+const PROXIMITY_THRESHOLD_METERS = 100;
+const FORECAST_HOURS = [1, 3, 6];
+const PUSH_RISK_THRESHOLD = 0.7;
+
+const isStaticRenderWeb = Platform.OS === "web" && typeof window === "undefined";
+const Notifications: typeof NotificationsType | null = isStaticRenderWeb
+  ? null
+  : require("expo-notifications");
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const riskFromRange = (value: number, startRisk: number, danger: number) =>
+  clamp((value - startRisk) / (danger - startRisk), 0, 1);
+
+const hasUsableLocalStorage = () =>
+  typeof localStorage !== "undefined" && typeof localStorage.getItem === "function";
+
+const describeBand = (score: number): RiskBandKey => {
+  if (score >= 0.8) return "danger";
+  if (score >= 0.65) return "high";
+  if (score >= 0.45) return "elevated";
+  if (score >= 0.28) return "caution";
+  return "stable";
+};
+
+const asNumber = (value: unknown, fallback: number) =>
+  typeof value === "number" && !Number.isNaN(value) ? value : fallback;
+
+const createSnapshotFromData = (data: GlobalPayload): SensorSnapshot => ({
+  soilMoisture: asNumber(data?.do_am_dat, 0),
+  slopeAngle: asNumber(data?.do_doc, 0),
+  rainfall24h: asNumber(data?.mua_24h, 0),
+  groundVibration: asNumber(data?.do_rung_dat, 0),
+});
+
+const formatDistance = (meters: number) => {
+  if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
+  return `${Math.round(meters)} m`;
+};
+
+const isBrowserOnline = () =>
+  typeof navigator !== "undefined" && typeof navigator.onLine === "boolean"
+    ? navigator.onLine
+    : true;
+
+const checkNetworkConnectivity = async () => {
+  let hasCellular = false;
+  try {
+    const Cellular = await import("expo-cellular");
+    const generation = await Cellular.getCellularGenerationAsync();
+    hasCellular = generation !== null;
+  } catch (error) {
+    console.warn("Bỏ qua kiểm tra kết nối di động (thiếu hoặc không hỗ trợ expo-cellular):", error);
+  }
+
+  const hasWifiOrAny = isBrowserOnline();
+  return hasCellular || hasWifiOrAny;
+};
+
+const globalSite = require("../../assets/data/global.json") as GlobalPayload;
+
+Notifications?.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
+
+const handleRegistrationError = (title: string, message: string) => {
+  Alert.alert(title, message);
+  console.error(message);
+};
+
+const registerForPushNotificationsAsync = async (
+  alertTitle: string,
+  pushCopy: Copy["common"]["pushErrors"]
+) => {
+  if (!Notifications) {
+    console.warn("Bỏ qua đăng ký thông báo (Notifications không khả dụng trong môi trường hiện tại).");
+    return null;
+  }
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "default",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#FF231F7C",
+    });
+  }
+
+  if (!Device.isDevice) {
+    handleRegistrationError(alertTitle, pushCopy.deviceRequired);
+    return null;
+  }
+
+  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  let finalStatus = existingStatus;
+  if (existingStatus !== "granted") {
+    const { status } = await Notifications.requestPermissionsAsync();
+    finalStatus = status;
+  }
+  if (finalStatus !== "granted") {
+    handleRegistrationError(alertTitle, pushCopy.permissionMissing);
+    return null;
+  }
+
+  const projectId =
+    Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
+  if (!projectId) {
+    handleRegistrationError(alertTitle, pushCopy.projectIdMissing);
+    return null;
+  }
+
+  try {
+    const { data } = await Notifications.getExpoPushTokenAsync({ projectId });
+    return data;
+  } catch (error) {
+    handleRegistrationError(alertTitle, pushCopy.tokenFailed(error));
+    return null;
+  }
+};
+
+const sendPushNotification = async (expoPushToken: string, title: string, body: string) => {
+  const message = {
+    to: expoPushToken,
+    sound: "default",
+    title,
+    body,
+    data: { type: "landslide_alert" },
+  };
+
+  try {
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(message),
+    });
+  } catch (error) {
+    console.warn("Gửi thông báo thất bại:", error);
+  }
+};
+
+const sendLocalNotification = async (title: string, body: string) => {
+  if (Platform.OS === "web") {
+    console.log("Bỏ qua thông báo cục bộ trên web/static.");
+    return;
+  }
+  if (!Notifications) {
+    console.log("Bỏ qua thông báo cục bộ vì Notifications không khả dụng.");
+    return;
+  }
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        sound: "default",
+      },
+      trigger: null,
+    });
+  } catch (error) {
+    console.warn("Không thể hiển thị thông báo cục bộ:", error);
+  }
+};
+
+export default function IndexScreen() {
+  const router = useRouter();
+  const { settings } = useSettings();
+  const copy = useMemo(() => getCopy(settings.lang), [settings.lang]);
+  const theme = useMemo(() => getTheme(settings.mode), [settings.mode]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const locale = settings.lang === "en" ? "en-US" : "vi-VN";
+  const goToSettings = useCallback(() => {
+    router.push("/settings" as Href);
+  }, [router]);
+  const proximityNotified = useRef(false);
+  const pushSentRef = useRef(false);
+  const groundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sensorSnapshot = useMemo(() => createSnapshotFromData(globalSite), []);
+  const lastUpdated = useMemo(() => new Date(), []);
+  const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
+  const notificationListener = useRef<NotificationsType.EventSubscription | null>(null);
+  const responseListener = useRef<NotificationsType.EventSubscription | null>(null);
+  const [lastNotification, setLastNotification] = useState<NotificationsType.Notification | null>(
+    null
+  );
+  const notificationsEnabled = settings.notifications;
+  const [connectivityOk, setConnectivityOk] = useState<boolean | null>(null);
+  const [groundRunning, setGroundRunning] = useState(false);
+  const [groundSamples, setGroundSamples] = useState<
+    { ax: number; ay: number; az: number }[]
+  >([]);
+  const [groundPoints, setGroundPoints] = useState<{ lat: number; lon: number }[]>([]);
+  const [groundTrust, setGroundTrust] = useState<number | null>(null);
+  const [groundStatus, setGroundStatus] = useState(copy.home.ground.statusReady);
+  const lastNotificationLabel = useMemo(() => {
+    if (!lastNotification) return copy.common.lastNotificationFallback;
+    const title = lastNotification.request.content.title || copy.common.lastNotificationFallback;
+    const timestamp =
+    typeof lastNotification.date === "number"
+        ? new Date(lastNotification.date).toLocaleTimeString(locale, {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : null;
+    return timestamp ? `${title} (${timestamp})` : title;
+  }, [copy.common.lastNotificationFallback, lastNotification, locale]);
+
+  const metricConfig = useMemo(
+    () => ({
+      soilMoisture: { ...METRIC_BASE.soilMoisture, label: copy.home.metrics.soilMoisture },
+      slopeAngle: { ...METRIC_BASE.slopeAngle, label: copy.home.metrics.slopeAngle },
+      rainfall24h: { ...METRIC_BASE.rainfall24h, label: copy.home.metrics.rainfall24h },
+      groundVibration: { ...METRIC_BASE.groundVibration, label: copy.home.metrics.groundVibration },
+    }),
+    [copy]
+  );
+
+  useEffect(() => {
+    setGroundStatus(
+      groundRunning ? copy.home.ground.statusRecording : copy.home.ground.statusReady
+    );
+  }, [copy, groundRunning]);
+
+  const riskLevels = useMemo(() => {
+    const doAm = sensorSnapshot.soilMoisture;
+    const mua = sensorSnapshot.rainfall24h;
+    const doc = sensorSnapshot.slopeAngle;
+    const rung = sensorSnapshot.groundVibration;
+
+    return {
+      soilMoisture: riskFromRange(doAm, 60, 100), // nguy hiểm khi đất gần bão hòa
+      rainfall24h: riskFromRange(mua, 80, 200), // cảnh báo từ 100-200mm/24h
+      slopeAngle: riskFromRange(doc, 25, 45), // >30-45 độ rất dốc
+      groundVibration: riskFromRange(rung, 4, 6.5), // rung chấn 4.5-5.0 Richter trở lên đáng kể
+    };
+  }, [sensorSnapshot]);
+
+  const weightedScore = useMemo(
+    () =>
+      (Object.entries(WEIGHTS) as [keyof SensorSnapshot, number][]).reduce(
+        (total, [key, weight]) => total + riskLevels[key] * weight,
+        0
+      ),
+    [riskLevels]
+  );
+
+  const probability = useMemo(() => clamp(0.18 + weightedScore * 0.92, 0, 1), [weightedScore]);
+  const probabilityPercent = Math.round(probability * 100);
+  const band = describeBand(probability);
+  const severityColor = SERIOUSNESS_COLORS[band];
+  const sensorConfidence = Math.round(
+    clamp(
+      60 +
+        15 * (1 - riskLevels.groundVibration) +
+        10 * (1 - riskLevels.rainfall24h * 0.6) +
+        15 * (1 - riskLevels.soilMoisture * 0.4),
+      40,
+      100
+    )
+  );
+
+  const forecasts = useMemo(() => {
+    return FORECAST_HOURS.map((hours) => {
+      const rainfallPressure = riskLevels.rainfall24h * 0.18;
+      const slopePressure = riskLevels.slopeAngle * 0.12;
+      const saturationPush = riskLevels.soilMoisture * 0.1;
+      const projected = clamp(
+        probability + (hours / 6) * (rainfallPressure + slopePressure + saturationPush),
+        0,
+        1
+      );
+      return {
+        hours,
+        projected,
+        band: describeBand(projected),
+      };
+    });
+  }, [probability, riskLevels]);
+
+  const factors = useMemo(
+    () =>
+      (Object.keys(metricConfig) as (keyof SensorSnapshot)[]).map((key) => {
+        const meta = metricConfig[key];
+        return {
+          key,
+          label: meta.label,
+          value: meta.format(sensorSnapshot[key]),
+          level: riskLevels[key],
+          color: meta.color,
+        };
+      }),
+    [metricConfig, riskLevels, sensorSnapshot]
+  );
+
+  const dominantFactor = useMemo(() => {
+    return factors.reduce<null | (typeof factors)[number]>((top, current) => {
+      if (!top) return current;
+      const topScore = riskLevels[top.key] * WEIGHTS[top.key];
+      const currentScore = riskLevels[current.key] * WEIGHTS[current.key];
+      return currentScore > topScore ? current : top;
+    }, null);
+  }, [factors, riskLevels]);
+
+  const mitigationSteps = useMemo(() => {
+    if (probability >= 0.75) {
+      return copy.home.mitigation.extreme;
+    }
+    if (probability >= 0.55) {
+      return copy.home.mitigation.high;
+    }
+    if (probability >= 0.35) {
+      return copy.home.mitigation.medium;
+    }
+    return copy.home.mitigation.low;
+  }, [copy, probability]);
+
+  const distanceMeters = clamp(asNumber(globalSite?.khoang_cach, 0), 0, Number.MAX_SAFE_INTEGER);
+  const distanceLabel = formatDistance(distanceMeters);
+  const siteName = globalSite?.ten || copy.common.stationNameFallback;
+  const siteId = globalSite?.id || copy.common.stationIdFallback;
+  const updatedAtLabel = lastUpdated.toLocaleTimeString(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const coordinateLabel =
+    typeof globalSite?.toa_do?.x === "number" && typeof globalSite?.toa_do?.y === "number"
+      ? `${globalSite.toa_do.x.toFixed(2)}N, ${globalSite.toa_do.y.toFixed(2)}E`
+      : copy.common.coordinatesFallback;
+
+  const ensureConnectivity = useCallback(async () => {
+    const hasNet = await checkNetworkConnectivity();
+    setConnectivityOk(hasNet);
+    if (!hasNet) {
+      Alert.alert(copy.common.connectivity.needTitle, copy.common.connectivity.needBody);
+    }
+    return hasNet;
+  }, [copy]);
+
+  useEffect(() => {
+    ensureConnectivity();
+  }, [ensureConnectivity]);
+
+  const connectivityLabel = useMemo(() => {
+    if (connectivityOk === false) return copy.common.connectivity.offline;
+    if (connectivityOk) return copy.common.connectivity.online;
+    return copy.common.connectivity.checking;
+  }, [connectivityOk, copy]);
+
+  useEffect(() => {
+    if (distanceMeters <= PROXIMITY_THRESHOLD_METERS && !proximityNotified.current) {
+      proximityNotified.current = true;
+      Alert.alert(
+        copy.common.proximityTitle,
+        copy.common.proximityBody(distanceLabel, PROXIMITY_THRESHOLD_METERS)
+      );
+    }
+    if (distanceMeters > PROXIMITY_THRESHOLD_METERS + 20) {
+      proximityNotified.current = false;
+    }
+  }, [copy, distanceLabel, distanceMeters]);
+
+  useEffect(() => {
+    if (!notificationsEnabled) {
+      console.log("Thông báo tắt trong local.json; bỏ qua đăng ký push.");
+      return;
+    }
+
+    if (!Notifications) {
+      console.log("Notifications không khả dụng (SSR/static); bỏ qua đăng ký push.");
+      return;
+    }
+
+    const usableLocalStorage = hasUsableLocalStorage();
+    if (Platform.OS === "web" && !usableLocalStorage) {
+      console.log("Bỏ qua đăng ký push trên web/static (không có localStorage khả dụng).");
+      return;
+    }
+
+    registerForPushNotificationsAsync(copy.common.noticeTitle, copy.common.pushErrors).then(
+      (token) => {
+        if (token) setExpoPushToken(token);
+      }
+    );
+
+    notificationListener.current = Notifications.addNotificationReceivedListener(
+      (notification) => {
+        setLastNotification(notification);
+      }
+    );
+    responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
+      console.log("Phản hồi thông báo:", response.actionIdentifier);
+    });
+
+    return () => {
+      notificationListener.current?.remove();
+      responseListener.current?.remove();
+    };
+  }, [copy.common.noticeTitle, copy.common.pushErrors, notificationsEnabled]);
+
+  useEffect(() => {
+    if (!notificationsEnabled) return;
+
+    const isClose = distanceMeters <= PROXIMITY_THRESHOLD_METERS;
+    const isHighRisk = probability >= PUSH_RISK_THRESHOLD;
+    const readyForPush = isClose && isHighRisk && !pushSentRef.current;
+
+    if (readyForPush) {
+      pushSentRef.current = true;
+      void ensureConnectivity();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+
+      const title = copy.common.pushTitle;
+      const body = copy.common.pushBody(probabilityPercent, siteName, distanceLabel);
+      if (expoPushToken) {
+        sendPushNotification(expoPushToken, title, body);
+      } else {
+        sendLocalNotification(title, body);
+      }
+    }
+    if ((!isClose || probability < PUSH_RISK_THRESHOLD - 0.1) && pushSentRef.current) {
+      pushSentRef.current = false;
+    }
+  }, [
+    copy.common,
+    distanceLabel,
+    distanceMeters,
+    ensureConnectivity,
+    expoPushToken,
+    notificationsEnabled,
+    probability,
+    probabilityPercent,
+    siteName,
+  ]);
+
+  const groundTrustScore = useMemo(() => {
+    if (!groundSamples.length) return null;
+    const avgMagnitude =
+      groundSamples.reduce(
+        (sum, sample) => sum + Math.abs(sample.ax) + Math.abs(sample.ay) + Math.abs(sample.az),
+        0
+      ) / groundSamples.length;
+    return Math.round(clamp(100 - avgMagnitude * 40, 0, 100));
+  }, [groundSamples]);
+
+  useEffect(() => {
+    setGroundTrust(groundTrustScore);
+  }, [groundTrustScore]);
+
+  useEffect(() => {
+    if (!groundRunning) {
+      if (groundTimerRef.current) {
+        clearTimeout(groundTimerRef.current);
+        groundTimerRef.current = null;
+      }
+      setGroundStatus(copy.home.ground.statusReady);
+      return;
+    }
+
+    let accelSub: { remove: () => void } | null = null;
+    let locSub: Location.LocationSubscription | null = null;
+    let cancelled = false;
+
+    const recordAccelerometer = ({ x, y, z }: { x: number; y: number; z: number }) => {
+      if (cancelled) return;
+      setGroundSamples((prev) => [...prev.slice(-300), { ax: x, ay: y, az: z }]);
+    };
+
+    const recordLocation = (loc: Location.LocationObject) => {
+      if (cancelled) return;
+      setGroundPoints((prev) => [
+        ...prev,
+        { lat: loc.coords.latitude, lon: loc.coords.longitude },
+      ]);
+    };
+
+    const requestLocationPermission = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === "granted") return true;
+        Alert.alert(copy.common.locationPermissionTitle, copy.common.locationPermissionBody);
+        return false;
+      } catch (error) {
+        console.warn("Không lấy được quyền vị trí:", error);
+        return false;
+      }
+    };
+
+    const startRecording = async () => {
+      const hasNet = await ensureConnectivity();
+      if (!hasNet || cancelled) {
+        setGroundRunning(false);
+        return;
+      }
+
+      const hasPermission = await requestLocationPermission();
+      if (!hasPermission || cancelled) {
+        setGroundRunning(false);
+        return;
+      }
+
+      setGroundStatus(copy.home.ground.statusRecording);
+      groundTimerRef.current = setTimeout(() => setGroundRunning(false), 5 * 60 * 1000);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+
+      try {
+        accelSub = Accelerometer.addListener(recordAccelerometer);
+        Accelerometer.setUpdateInterval(100);
+      } catch (error) {
+        console.warn("Không thể ghi cảm biến:", error);
+      }
+
+      try {
+        locSub = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 2 },
+          recordLocation
+        );
+      } catch (error) {
+        console.warn("Không thể theo dõi vị trí:", error);
+      }
+    };
+
+    startRecording();
+
+    return () => {
+      cancelled = true;
+      accelSub?.remove();
+      locSub?.remove();
+      if (groundTimerRef.current) {
+        clearTimeout(groundTimerRef.current);
+        groundTimerRef.current = null;
+      }
+      setGroundStatus(copy.home.ground.statusReady);
+    };
+  }, [copy, ensureConnectivity, groundRunning]);
+
+  const handleToggleGroundCheck = useCallback(async () => {
+    if (groundRunning) {
+      setGroundRunning(false);
+      Haptics.selectionAsync().catch(() => {});
+      return;
+    }
+
+    const ok = await ensureConnectivity();
+    if (!ok) return;
+
+    setGroundSamples([]);
+    setGroundPoints([]);
+    setGroundTrust(null);
+    setGroundRunning(true);
+  }, [ensureConnectivity, groundRunning]);
+
+  const quickStats = useMemo(
+    () => [
+      { label: copy.home.quickStats.distance, value: distanceLabel },
+      { label: copy.home.quickStats.sensorConfidence, value: `${sensorConfidence}%` },
+      { label: copy.home.quickStats.connectivity, value: connectivityLabel },
+      { label: copy.home.quickStats.dominant, value: dominantFactor?.label ?? copy.common.calculating },
+      { label: copy.home.quickStats.siteId, value: siteId },
+      { label: copy.home.quickStats.coords, value: coordinateLabel },
+      { label: copy.home.quickStats.lastNotification, value: lastNotificationLabel },
+    ],
+    [
+      connectivityLabel,
+      coordinateLabel,
+      distanceLabel,
+      dominantFactor,
+      lastNotificationLabel,
+      copy,
+      sensorConfidence,
+      siteId,
+    ]
+  );
+
+  const groundTrustLabel = useMemo(() => {
+    if (groundTrust !== null) return `${groundTrust}%`;
+    if (groundRunning) return copy.home.ground.trustWorking;
+    return copy.home.ground.trustNone;
+  }, [copy, groundRunning, groundTrust]);
+
+  const groundPointsLabel = useMemo(() => {
+    if (groundPoints.length > 0) return copy.home.ground.pointsCount(groundPoints.length);
+    if (groundRunning) return copy.home.ground.pointsWorking;
+    return copy.home.ground.pointsNone;
+  }, [copy, groundPoints.length, groundRunning]);
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <StatusBar style={theme.statusBar} />
+      <ScrollView contentContainerStyle={styles.container} style={styles.scroll}>
+        <View style={styles.hero}>
+          <View style={styles.heroHeader}>
+            <View>
+              <Text style={styles.heroLabel}>{copy.home.heroTitle}</Text>
+              <Text style={styles.heroLocation}>{siteName}</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={goToSettings}
+              style={({ pressed }) => [styles.settingsButton, pressed && styles.settingsButtonPressed]}
+            >
+              <Ionicons name="settings-outline" size={18} color={theme.icon} />
+            </Pressable>
+          </View>
+          <View style={[styles.heroRow, styles.heroRowWide]}>
+            <Text style={[styles.heroValue, { color: severityColor }]}>{probabilityPercent}%</Text>
+            <View style={styles.heroMeta}>
+              <Text style={styles.heroBand}>{copy.common.riskBands[band]}</Text>
+              <Text style={styles.heroTime}>{copy.home.updatedAt(updatedAtLabel)}</Text>
+            </View>
+          </View>
+        </View>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{copy.home.quickSummaryTitle}</Text>
+          <View style={styles.quickRow}>
+            {quickStats.map((item) => (
+              <View key={item.label} style={styles.quickCard}>
+                <Text style={styles.quickLabel}>{item.label}</Text>
+                <Text style={styles.quickValue}>{item.value}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{copy.home.fieldCheckTitle}</Text>
+          <Text style={styles.sectionHint}>{groundStatus}</Text>
+          <View style={styles.quickRow}>
+            <View style={styles.groundCard}>
+              <Text style={styles.quickLabel}>{copy.home.ground.trustLabel}</Text>
+              <Text style={styles.quickValue}>{groundTrustLabel}</Text>
+            </View>
+            <View style={styles.groundCard}>
+              <Text style={styles.quickLabel}>{copy.home.ground.pointsLabel}</Text>
+              <Text style={styles.quickValue}>{groundPointsLabel}</Text>
+            </View>
+            <View style={styles.groundCard}>
+              <Text style={styles.quickLabel}>{copy.home.ground.connectionLabel}</Text>
+              <Text style={styles.quickValue}>{connectivityLabel}</Text>
+            </View>
+          </View>
+          <Pressable
+            onPress={handleToggleGroundCheck}
+            style={[styles.groundButton, groundRunning && styles.groundButtonStop]}
+          >
+            {groundRunning && <ActivityIndicator color="#ffffff" />}
+            <Text style={styles.groundButtonText}>
+              {groundRunning ? copy.home.ground.buttonStop : copy.home.ground.buttonStart}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{copy.home.shortForecastTitle}</Text>
+          <View style={styles.forecastRow}>
+            {forecasts.map((forecast) => (
+              <View key={forecast.hours} style={styles.forecastCard}>
+                <Text style={styles.forecastTitle}>{copy.home.forecastAhead(forecast.hours)}</Text>
+                <Text style={[styles.forecastValue, { color: SERIOUSNESS_COLORS[forecast.band] }]}>
+                  {`${Math.round(forecast.projected * 100)}%`}
+                </Text>
+                <Text style={styles.forecastLabel}>{copy.common.riskBands[forecast.band]}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{copy.home.sensorsTitle}</Text>
+          {factors.map((factor) => (
+            <View key={factor.key} style={styles.factorRow}>
+              <View style={styles.factorMeta}>
+                <Text style={styles.factorTitle}>{factor.label}</Text>
+                <Text style={styles.factorValue}>{factor.value}</Text>
+              </View>
+              <View style={styles.factorBar}>
+                <View
+                  style={[
+                    styles.factorLevel,
+                    { backgroundColor: factor.color, width: `${factor.level * 100}%` },
+                  ]}
+                />
+              </View>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{copy.home.guidanceTitle}</Text>
+          {mitigationSteps.map((step, index) => (
+            <Text key={step} style={styles.step}>
+              {`${index + 1}. ${step}`}
+            </Text>
+          ))}
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-  },
-});
+const createStyles = (theme: Theme) =>
+  StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    scroll: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    container: {
+      padding: 20,
+      gap: 16,
+      backgroundColor: theme.background,
+    },
+    hero: {
+      borderRadius: 18,
+      padding: 18,
+      gap: 8,
+      alignItems: "stretch",
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.card,
+    },
+    heroHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    heroLabel: {
+      color: theme.subtext,
+      fontSize: 14,
+    },
+    heroLocation: {
+      color: theme.text,
+      fontSize: 16,
+      fontWeight: "700",
+    },
+    heroRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 14,
+      marginTop: 4,
+    },
+    heroRowWide: {
+      alignSelf: "stretch",
+    },
+    heroValue: {
+      fontSize: 46,
+      fontWeight: "800",
+      textAlign: "center",
+    },
+    heroMeta: {
+      alignItems: "flex-start",
+      gap: 2,
+    },
+    heroBand: {
+      fontSize: 18,
+      fontWeight: "700",
+      color: theme.text,
+    },
+    heroTime: {
+      color: theme.subtext,
+      fontSize: 13,
+    },
+    settingsButton: {
+      padding: 10,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.softCard,
+    },
+    settingsButtonPressed: {
+      opacity: 0.8,
+    },
+    section: {
+      padding: 16,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: theme.border,
+      gap: 12,
+      backgroundColor: theme.card,
+    },
+    sectionTitle: {
+      fontSize: 16,
+      fontWeight: "700",
+      color: theme.text,
+    },
+    sectionHint: {
+      fontSize: 13,
+      color: theme.subtext,
+      marginTop: -4,
+    },
+    quickRow: {
+      flexDirection: "row",
+      gap: 12,
+      flexWrap: "wrap",
+    },
+    quickCard: {
+      flex: 1,
+      minWidth: "45%",
+      borderRadius: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.card,
+    },
+    groundCard: {
+      flex: 1,
+      minWidth: "45%",
+      borderRadius: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.softCard,
+    },
+    groundButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      paddingVertical: 12,
+      borderRadius: 12,
+      backgroundColor: theme.accent,
+    },
+    groundButtonStop: {
+      backgroundColor: theme.danger,
+    },
+    groundButtonText: {
+      color: "#ffffff",
+      fontSize: 15,
+      fontWeight: "700",
+    },
+    quickLabel: {
+      fontSize: 13,
+      color: theme.subtext,
+    },
+    quickValue: {
+      fontSize: 15,
+      fontWeight: "700",
+      color: theme.text,
+      marginTop: 4,
+    },
+    forecastRow: {
+      flexDirection: "row",
+      gap: 12,
+    },
+    forecastCard: {
+      flex: 1,
+      alignItems: "center",
+      paddingVertical: 6,
+      gap: 4,
+    },
+    forecastTitle: {
+      fontSize: 13,
+      color: theme.subtext,
+    },
+    forecastValue: {
+      fontSize: 22,
+      fontWeight: "800",
+    },
+    forecastLabel: {
+      fontSize: 13,
+      color: theme.text,
+    },
+    factorRow: {
+      gap: 6,
+    },
+    factorMeta: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    factorTitle: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: theme.text,
+    },
+    factorValue: {
+      fontSize: 14,
+      color: theme.subtext,
+    },
+    factorBar: {
+      height: 8,
+      backgroundColor: theme.track,
+      borderRadius: 999,
+    },
+    factorLevel: {
+      height: 8,
+      borderRadius: 999,
+    },
+    step: {
+      fontSize: 14,
+      color: theme.text,
+      marginTop: 4,
+    },
+  });
