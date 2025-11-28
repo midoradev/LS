@@ -1,15 +1,15 @@
 {
-  "ten": "Tram IOT 1",
-  "id": "iot_1",
+  "ten": "Trạm IOT Lào Cai",
+  "id": "iot_lao_cai",
 
   "toa_do": {
-    "x": 5,
-    "y": 7
+    "x": 22.485,
+    "y": 103.97
   },
-  "do_am_dat": 30,
-  "do_doc": 40,
-  "do_rung_dat": 5,
-  "mua_24h": 100,
+  "do_am_dat": 10,
+  "do_doc": 10,
+  "do_rung_dat": 2,
+  "mua_24h": 0,
 
   "khoang_cach": 0
 }

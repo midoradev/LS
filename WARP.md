@@ -156,6 +156,7 @@ Cập nhật các hằng số trong `app/index.tsx`:
 Chỉnh sửa `assets/data/global.json`:
 - `ten`: Tên trạm
 - `id`: Mã định danh trạm
+- `dia_diem`: (tùy chọn) chuỗi truy vấn địa điểm để geocode nếu thiếu tọa độ, ví dụ `"Lao Cai, VN"`
 - `toa_do`: Tọa độ {x: lat, y: lon}
 - `do_am_dat`: Độ ẩm đất (%)
 - `do_doc`: Độ dốc (độ)
@@ -163,11 +164,31 @@ Chỉnh sửa `assets/data/global.json`:
 - `mua_24h`: Lượng mưa 24 giờ (mm)
 - `khoang_cach`: Khoảng cách từ thiết bị đến trạm (mét)
 
+### Tích hợp OpenWeatherMap (lượng mưa 24h)
+- Đặt API key vào biến môi trường `EXPO_PUBLIC_OPENWEATHER_API_KEY` (hoặc thêm `extra.openWeatherApiKey` trong `app.json`).
+- Ứng dụng tự động lấy lượng mưa 24h theo tọa độ trong `assets/data/global.json` và ghi đè `mua_24h` cục bộ khi tải thành công.
+- App dùng API 2.5: ưu tiên `forecast` 3h để cộng dồn 24h (8 ô 3h), fallback `weather` hiện tại (rain 1h/3h, cho 0mm nếu không có `rain`); nếu cả hai không có dữ liệu mưa thì giữ giá trị tĩnh.
+- API gọi một lần khi vào màn hình; log chỉ hiển thị phần `rain` để giảm nhiễu.
+- Nếu thiếu tọa độ trạm, app sẽ geocode bằng OpenWeather Direct Geocoding (`/geo/1.0/direct`) dựa trên `dia_diem` hoặc `ten` rồi cập nhật tọa độ trước khi gọi mưa.
+
+### Firebase (lưu trữ global + local)
+- Cấu hình URL DB (Realtime Database) và token (tùy chọn) qua biến môi trường `EXPO_PUBLIC_FIREBASE_DB_URL`, `EXPO_PUBLIC_FIREBASE_AUTH_TOKEN` hoặc `app.json > extra.firebaseDbUrl` / `extra.firebaseAuthToken`. Nếu chỉ có `firebaseProjectId`, app tự sinh URL `https://<project>-default-rtdb.firebaseio.com`.
+- App sẽ:
+  - Đọc `global` từ Firebase (GET `global.json`) và dùng để thay thế `assets/data/global.json` khi có.
+  - Đọc/ghi cài đặt + thông tin thiết bị tại `devices/<id>`; cài đặt cũng được lưu localStorage + AsyncStorage để tránh tạo ID mới mỗi lần mở app.
+  - Nếu không cấu hình Firebase, app tự động fallback sang file tĩnh và localStorage, không báo lỗi.
+- Ưu tiên cấu hình qua biến môi trường (`EXPO_PUBLIC_FIREBASE_*`). Xem `.env.example` để điền giá trị (không commit file `.env` chứa key thật).
+- Nếu cần dùng SDK đầy đủ (initializeApp), lấy config qua các biến: `EXPO_PUBLIC_FIREBASE_API_KEY`, `EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN`, `EXPO_PUBLIC_FIREBASE_DB_URL`, `EXPO_PUBLIC_FIREBASE_PROJECT_ID`, `EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET`, `EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `EXPO_PUBLIC_FIREBASE_APP_ID`, `EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID`.
+- Firebase hiện dùng SDK Realtime Database; nếu SDK không khởi tạo (thiếu env hợp lệ) thì bỏ qua đồng bộ cloud.
+- Nếu API trả hợp lệ nhưng không có trường `rain`, app ghi nhận mưa 0mm thay vì giữ giá trị cũ để tránh hiển thị sai.
+
 ### Cài đặt người dùng
 Chỉnh sửa `assets/data/local.json`:
 - `notifications`: Bật/tắt thông báo đẩy
 - `lang`: Ngôn ngữ (hiện tại "vi" cho tiếng Việt)
 - `mode`: Giao diện ("light" hoặc "dark")
+- Khi app chạy lần đầu nếu `id` rỗng hoặc là placeholder `{id}`, app sẽ sinh UUID (dùng `crypto.randomUUID`/`getRandomValues`, fallback ngẫu nhiên) và lưu vào localStorage + Firebase `local.json`.
+- App ghi nhận thông tin thiết bị (expo-device) và lưu dưới `devices/<id>.json` trên Firebase khi có cấu hình.
 
 ## Các thư viện phụ thuộc
 

@@ -30,7 +30,8 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
-      ]
+      ],
+      "package": "com.lucas28.landsafe"
     },
     "web": {
       "output": "static",
@@ -68,7 +69,11 @@
       "router": {},
       "eas": {
         "projectId": "96cfef4d-d6d9-4ad4-a755-f50d372c4a70"
-      }
+      },
+      "openWeatherApiKey": null,
+      "firebaseProjectId": null,
+      "firebaseDbUrl": null,
+      "firebaseAuthToken": null
     },
     "owner": "lucas28",
     "runtimeVersion": {
