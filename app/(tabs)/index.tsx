@@ -103,7 +103,7 @@ type RainEndpoint = {
 };
 
 const isStaticRenderWeb =
-  Platform.OS === "web" && (typeof globalThis === "undefined" || typeof globalThis.window === "undefined");
+  Platform.OS === "web" && (globalThis as { window?: unknown }).window === undefined;
 const Notifications: typeof NotificationsType | null = isStaticRenderWeb ? null : NotificationsModule;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));

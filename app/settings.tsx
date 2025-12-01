@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -10,7 +10,7 @@ import { getTheme, type Theme } from "../lib/theme";
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { settings, updateSettings, resetDefaults } = useSettings();
+  const { settings, updateSettings } = useSettings();
   const copy = useMemo(() => getCopy(settings.lang), [settings.lang]);
   const theme = useMemo(() => getTheme(settings.mode), [settings.mode]);
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -23,11 +23,6 @@ export default function SettingsScreen() {
       router.replace("/");
     }
   }, [router]);
-
-  const handleReset = useCallback(() => {
-    resetDefaults();
-    Alert.alert(copy.settings.resetAlertTitle, copy.settings.resetAlertBody);
-  }, [copy.settings.resetAlertBody, copy.settings.resetAlertTitle, resetDefaults]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
@@ -124,10 +119,6 @@ export default function SettingsScreen() {
             {copy.settings.subtitle}
           </Text>
         </View>
-
-        <Pressable onPress={handleReset} style={styles.resetButton}>
-          <Text style={styles.resetText}>{copy.settings.resetLabel}</Text>
-        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -250,20 +241,6 @@ const createStyles = (theme: Theme) =>
     },
     infoValue: {
       fontSize: 14,
-      fontWeight: "700",
-      color: theme.text,
-    },
-    resetButton: {
-      alignItems: "center",
-      justifyContent: "center",
-      paddingVertical: 12,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: theme.border,
-      backgroundColor: theme.softCard,
-    },
-    resetText: {
-      fontSize: 15,
       fontWeight: "700",
       color: theme.text,
     },

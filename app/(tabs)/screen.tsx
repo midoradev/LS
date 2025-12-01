@@ -33,6 +33,7 @@ export default function MapScreen() {
   const theme = useMemo(() => getTheme(settings.mode), [settings.mode]);
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [status, setStatus] = useState<MapStatus>({ key: "loading" });
+  const isReady = status.key === "ready";
 
   const handleLoadStart = useCallback(() => {
     setStatus({ key: "loading" });
@@ -111,13 +112,6 @@ export default function MapScreen() {
           <WebView
             originWhitelist={["*"]}
             source={{ uri: "https://luquetsatlo.nchmf.gov.vn/" }}
-            startInLoadingState
-            renderLoading={() => (
-              <View style={styles.loader}>
-                <ActivityIndicator size="large" color={theme.icon} />
-                <Text style={styles.loaderText}>{loaderMessage}</Text>
-              </View>
-            )}
             onLoadStart={handleLoadStart}
             onLoadProgress={handleLoadProgress}
             onLoad={handleLoad}
@@ -126,8 +120,16 @@ export default function MapScreen() {
             onHttpError={handleHttpError}
             onMessage={handleMessage}
             onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
-            style={styles.webview}
+            style={[styles.webview, !isReady && styles.webviewHidden]}
           />
+          {status.key !== "ready" && (
+            <View style={styles.loaderOverlay}>
+              <View style={styles.loader}>
+                <ActivityIndicator size="large" color={theme.icon} />
+                <Text style={styles.loaderText}>{loaderMessage}</Text>
+              </View>
+            </View>
+          )}
         </View>
       </View>
     </SafeAreaView>
@@ -159,12 +161,19 @@ const createStyles = (theme: Theme) =>
     webview: {
       flex: 1,
     },
+    webviewHidden: {
+      opacity: 0,
+    },
+    loaderOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.card,
+    },
     loader: {
       alignItems: "center",
       justifyContent: "center",
       gap: 8,
-      flex: 1,
-      backgroundColor: theme.card,
     },
     loaderText: {
       fontSize: 14,

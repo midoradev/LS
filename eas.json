@@ -29,6 +29,9 @@
     "production": {
       "autoIncrement": true,
       "channel": "production"
+    },
+    "my-profile": {
+      "environment": "production"
     }
   },
   "submit": {

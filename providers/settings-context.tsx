@@ -50,6 +50,7 @@ type DeviceSnapshot = {
 type SettingsContextValue = {
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
+  resetDefaults: () => void;
 };
 
 const localConfig = require("../assets/data/local.json") as LocalConfig;
@@ -67,27 +68,25 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 let asyncStoragePromise: Promise<AsyncStorageStatic | null> | null = null;
 const resolveAsyncStorage = () => {
-  if (!asyncStoragePromise) {
-    asyncStoragePromise = import("@react-native-async-storage/async-storage")
-      .then((mod) => {
-        const storage = mod?.default;
-        if (
-          storage &&
-          typeof storage.getItem === "function" &&
-          typeof storage.setItem === "function"
-        ) {
-          return storage;
-        }
-        return null;
-      })
-      .catch((error) => {
-        console.warn(
-          "AsyncStorage native module unavailable; skipping native persistence.",
-          error
-        );
-        return null;
-      });
-  }
+  asyncStoragePromise ??= import("@react-native-async-storage/async-storage")
+    .then((mod) => {
+      const storage = mod?.default;
+      if (
+        storage &&
+        typeof storage.getItem === "function" &&
+        typeof storage.setItem === "function"
+      ) {
+        return storage;
+      }
+      return null;
+    })
+    .catch((error) => {
+      console.warn(
+        "AsyncStorage native module unavailable; skipping native persistence.",
+        error
+      );
+      return null;
+    });
   return asyncStoragePromise;
 };
 
@@ -254,12 +253,17 @@ export function SettingsProvider({
     setSettings((prev) => ({ ...prev, ...patch }));
   }, []);
 
+  const resetDefaults = useCallback(() => {
+    setSettings((prev) => ({ ...defaultSettings, id: prev.id ?? defaultSettings.id }));
+  }, []);
+
   const value = useMemo(
     () => ({
       settings,
       updateSettings,
+      resetDefaults,
     }),
-    [settings, updateSettings]
+    [settings, updateSettings, resetDefaults]
   );
 
   return (
