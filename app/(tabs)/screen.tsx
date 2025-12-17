@@ -30,7 +30,7 @@ type MapStatus =
 export default function MapScreen() {
   const { settings } = useSettings();
   const copy = useMemo(() => getCopy(settings.lang), [settings.lang]);
-  const theme = useMemo(() => getTheme(settings.mode), [settings.mode]);
+  const theme = useMemo(() => getTheme(), []);
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [status, setStatus] = useState<MapStatus>({ key: "loading" });
   const isReady = status.key === "ready";

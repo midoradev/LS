@@ -12,7 +12,7 @@ export default function SettingsScreen() {
   const router = useRouter();
   const { settings, updateSettings } = useSettings();
   const copy = useMemo(() => getCopy(settings.lang), [settings.lang]);
-  const theme = useMemo(() => getTheme(settings.mode), [settings.mode]);
+  const theme = useMemo(() => getTheme(), []);
   const styles = useMemo(() => createStyles(theme), [theme]);
   const langOptions = copy.settings.languages;
 
@@ -59,29 +59,6 @@ export default function SettingsScreen() {
               trackColor={{ false: theme.track, true: theme.accent }}
               onValueChange={(value) => updateSettings({ notifications: value })}
             />
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.sectionTop}>
-            <Text style={styles.sectionTitle}>{copy.settings.appearanceTitle}</Text>
-            <Text style={styles.sectionHint}>{copy.settings.appearanceHint}</Text>
-          </View>
-          <View style={styles.chipRow}>
-            {(["light", "dark"] as const).map((mode) => {
-              const active = settings.mode === mode;
-              return (
-                <Pressable
-                  key={mode}
-                  onPress={() => updateSettings({ mode })}
-                  style={[styles.chip, active && styles.chipActive]}
-                >
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                    {mode === "light" ? copy.settings.modeLight : copy.settings.modeDark}
-                  </Text>
-                </Pressable>
-              );
-            })}
           </View>
         </View>
 

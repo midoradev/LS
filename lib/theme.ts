@@ -26,19 +26,4 @@ const lightTheme: Theme = {
   statusBar: "dark",
 };
 
-const darkTheme: Theme = {
-  background: "#0b1220",
-  card: "#0f172a",
-  softCard: "#111827",
-  border: "#1f2937",
-  text: "#e2e8f0",
-  subtext: "#cbd5e1",
-  icon: "#e2e8f0",
-  accent: "#22c55e",
-  danger: "#ef4444",
-  track: "#1f2937",
-  statusBar: "light",
-};
-
-export const getTheme = (mode: "light" | "dark") =>
-  mode === "dark" ? darkTheme : lightTheme;
+export const getTheme = () => lightTheme;

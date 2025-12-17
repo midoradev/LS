@@ -12,12 +12,9 @@ import * as Device from "expo-device";
 import type { AsyncStorageStatic } from "@react-native-async-storage/async-storage";
 import { fetchFirebaseJson, patchFirebaseJson } from "../lib/firebase";
 
-type SettingsMode = "light" | "dark";
-
 type LocalConfig = {
   id?: string;
   lang?: string;
-  mode?: SettingsMode;
   notifications?: boolean;
   device?: DeviceSnapshot;
 };
@@ -25,7 +22,6 @@ type LocalConfig = {
 export type Settings = {
   id?: string;
   lang: string;
-  mode: SettingsMode;
   notifications: boolean;
 };
 
@@ -58,13 +54,22 @@ const localConfig = require("../assets/data/local.json") as LocalConfig;
 const defaultSettings: Settings = {
   id: localConfig?.id,
   lang: localConfig?.lang ?? "vi",
-  mode: localConfig?.mode ?? "light",
   notifications: localConfig?.notifications !== false,
 };
 
 const storageKey = "ls2_settings";
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
+
+const sanitizeSettingsPatch = (value: unknown): Partial<Settings> => {
+  if (!value || typeof value !== "object") return {};
+  const record = value as Record<string, unknown>;
+  const patch: Partial<Settings> = {};
+  if (typeof record.id === "string") patch.id = record.id;
+  if (typeof record.lang === "string") patch.lang = record.lang;
+  if (typeof record.notifications === "boolean") patch.notifications = record.notifications;
+  return patch;
+};
 
 let asyncStoragePromise: Promise<AsyncStorageStatic | null> | null = null;
 const resolveAsyncStorage = () => {
@@ -167,7 +172,7 @@ export function SettingsProvider({
         if (!storage) return null;
         try {
           const raw = storage.getItem(storageKey);
-          return raw ? (JSON.parse(raw) as Partial<Settings>) : null;
+          return raw ? sanitizeSettingsPatch(JSON.parse(raw)) : null;
         } catch (error) {
           console.warn("Không thể đọc cài đặt đã lưu (localStorage):", error);
           return null;
@@ -179,7 +184,7 @@ export function SettingsProvider({
       if (asyncStorageRef.current) {
         try {
           const raw = await asyncStorageRef.current.getItem(storageKey);
-          asyncStored = raw ? (JSON.parse(raw) as Partial<Settings>) : null;
+          asyncStored = raw ? sanitizeSettingsPatch(JSON.parse(raw)) : null;
         } catch (error) {
           console.warn("Không thể đọc cài đặt đã lưu (AsyncStorage):", error);
         }
@@ -198,12 +203,13 @@ export function SettingsProvider({
     const controller = new AbortController();
     const loadCloudSettings = async () => {
       if (!settings.id || settings.id.includes("{id}")) return;
-      const remote = await fetchFirebaseJson<{ settings?: Settings }>(
+      const remote = await fetchFirebaseJson<{ settings?: unknown }>(
         `devices/${settings.id}`,
         controller.signal
       );
-      if (remote?.settings && !controller.signal.aborted) {
-        setSettings((prev) => ({ ...prev, ...remote.settings }));
+      const remoteSettings = sanitizeSettingsPatch(remote?.settings);
+      if (Object.keys(remoteSettings).length && !controller.signal.aborted) {
+        setSettings((prev) => ({ ...prev, ...remoteSettings }));
       }
     };
     loadCloudSettings();

@@ -253,7 +253,7 @@ export default function IndexScreen() {
   const router = useRouter();
   const { settings } = useSettings();
   const copy = useMemo(() => getCopy(settings.lang), [settings.lang]);
-  const theme = useMemo(() => getTheme(settings.mode), [settings.mode]);
+  const theme = useMemo(() => getTheme(), []);
   const styles = useMemo(() => createStyles(theme), [theme]);
   const locale = settings.lang === "en" ? "en-US" : "vi-VN";
   const goToSettings = useCallback(() => {

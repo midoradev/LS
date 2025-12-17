@@ -2,11 +2,11 @@
   "expo": {
     "name": "landsafe",
     "slug": "landsafe",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/icons/ios-light.png",
     "scheme": "landsafe",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
