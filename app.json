@@ -2,7 +2,7 @@
   "expo": {
     "name": "landsafe",
     "slug": "landsafe",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/icons/ios-light.png",
     "scheme": "landsafe",

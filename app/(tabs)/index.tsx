@@ -613,6 +613,7 @@ export default function IndexScreen() {
 
     notificationListener.current = Notifications.addNotificationReceivedListener(
       (notification) => {
+        console.log("Đã nhận thông báo:", notification.request.content);
         setLastNotification(notification);
       }
     );
