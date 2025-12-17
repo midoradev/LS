@@ -13,15 +13,19 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useRouter, type Href } from "expo-router";
-import * as Device from "expo-device";
 import Constants from "expo-constants";
-import * as NotificationsModule from "expo-notifications";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
 import { Accelerometer } from "expo-sensors";
 import { useSettings } from "../../providers/settings-context";
-import { getCopy, type Copy, type RiskBandKey } from "../../lib/copy";
+import { getCopy, type RiskBandKey } from "../../lib/copy";
 import { getTheme, type Theme } from "../../lib/theme";
+import {
+  getCachedPushToken,
+  getNotificationsClient,
+  presentLocalNotificationAsync,
+  registerForPushNotificationsAsync,
+} from "../../lib/notifications";
 import type * as NotificationsType from "expo-notifications";
 import { fetchFirebaseJson } from "../../lib/firebase";
 import globalSiteData from "../../assets/data/global.json";
@@ -102,9 +106,7 @@ type RainEndpoint = {
   extractor: (payload: unknown) => number | null;
 };
 
-const isStaticRenderWeb =
-  Platform.OS === "web" && (globalThis as { window?: unknown }).window === undefined;
-const Notifications: typeof NotificationsType | null = isStaticRenderWeb ? null : NotificationsModule;
+const Notifications = getNotificationsClient();
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -223,70 +225,6 @@ const logOpenWeatherPayload = (label: string, payload: unknown) => {
   }
 };
 
-Notifications?.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
-
-const handleRegistrationError = (title: string, message: string) => {
-  Alert.alert(title, message);
-  console.warn(message);
-};
-
-const registerForPushNotificationsAsync = async (
-  alertTitle: string,
-  pushCopy: Copy["common"]["pushErrors"]
-) => {
-  if (!Notifications) {
-    console.warn("Bỏ qua đăng ký thông báo (Notifications không khả dụng trong môi trường hiện tại).");
-    return null;
-  }
-  if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("default", {
-      name: "default",
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: "#FF231F7C",
-    });
-  }
-
-  if (!Device.isDevice) {
-    handleRegistrationError(alertTitle, pushCopy.deviceRequired);
-    return null;
-  }
-
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
-  if (existingStatus !== "granted") {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
-  }
-  if (finalStatus !== "granted") {
-    handleRegistrationError(alertTitle, pushCopy.permissionMissing);
-    return null;
-  }
-
-  const projectId =
-    Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
-  if (!projectId) {
-    handleRegistrationError(alertTitle, pushCopy.projectIdMissing);
-    return null;
-  }
-
-  try {
-    const { data } = await Notifications.getExpoPushTokenAsync({ projectId });
-    return data;
-  } catch (error) {
-    handleRegistrationError(alertTitle, pushCopy.tokenFailed(error));
-    return null;
-  }
-};
-
 const sendPushNotification = async (expoPushToken: string, title: string, body: string) => {
   const message = {
     to: expoPushToken,
@@ -311,29 +249,6 @@ const sendPushNotification = async (expoPushToken: string, title: string, body: 
   }
 };
 
-const sendLocalNotification = async (title: string, body: string) => {
-  if (Platform.OS === "web") {
-    console.log("Bỏ qua thông báo cục bộ trên web/static.");
-    return;
-  }
-  if (!Notifications) {
-    console.log("Bỏ qua thông báo cục bộ vì Notifications không khả dụng.");
-    return;
-  }
-  try {
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title,
-        body,
-        sound: "default",
-      },
-      trigger: null,
-    });
-  } catch (error) {
-    console.warn("Không thể hiển thị thông báo cục bộ:", error);
-  }
-};
-
 export default function IndexScreen() {
   const router = useRouter();
   const { settings } = useSettings();
@@ -354,7 +269,7 @@ export default function IndexScreen() {
   const [lastUpdated, setLastUpdated] = useState(() => new Date());
   const rainfallFetchedRef = useRef(false);
   const geocodeFetchedRef = useRef(false);
-  const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
+  const [expoPushToken, setExpoPushToken] = useState<string | null>(() => getCachedPushToken());
   const notificationListener = useRef<NotificationsType.EventSubscription | null>(null);
   const responseListener = useRef<NotificationsType.EventSubscription | null>(null);
   const [lastNotification, setLastNotification] = useState<NotificationsType.Notification | null>(
@@ -728,7 +643,7 @@ export default function IndexScreen() {
       if (expoPushToken) {
         sendPushNotification(expoPushToken, title, body);
       } else {
-        sendLocalNotification(title, body);
+        presentLocalNotificationAsync(title, body);
       }
     }
     if ((!isClose || probability < PUSH_RISK_THRESHOLD - 0.1) && pushSentRef.current) {
